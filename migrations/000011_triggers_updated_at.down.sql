@@ -1,0 +1,11 @@
+DROP TRIGGER IF EXISTS set_updated_at_insights ON tracking_period_insights;
+DROP TRIGGER IF EXISTS set_updated_at_recurring_transactions ON recurring_transactions;
+DROP TRIGGER IF EXISTS set_updated_at_savings_goals ON savings_goals;
+DROP TRIGGER IF EXISTS set_updated_at_budgets ON budgets;
+DROP TRIGGER IF EXISTS set_updated_at_transactions ON transactions;
+DROP TRIGGER IF EXISTS set_updated_at_tracking_periods ON tracking_periods;
+DROP TRIGGER IF EXISTS set_updated_at_categories ON categories;
+DROP TRIGGER IF EXISTS set_updated_at_accounts ON accounts;
+DROP TRIGGER IF EXISTS set_updated_at_user_settings ON user_settings;
+DROP TRIGGER IF EXISTS set_updated_at_users ON users;
+DROP FUNCTION IF EXISTS trg_set_updated_at();

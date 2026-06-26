@@ -1,0 +1,37 @@
+version: "2"
+sql:
+  - engine: "postgresql"
+    # Schema source of truth = the golang-migrate "up" files (numeric order).
+    # We glob only *.up.sql so the *.down.sql DROP statements don't confuse sqlc.
+    schema: "migrations/*.up.sql"
+    queries: "internal/database/queries"
+    gen:
+      go:
+        package: "sqlc"
+        out: "internal/database/sqlc"
+        sql_package: "pgx/v5"
+        emit_json_tags: true
+        emit_interface: true
+        emit_empty_slices: true
+        emit_pointers_for_null_types: true
+        overrides:
+          # Money: never float. Map NUMERIC -> shopspring/decimal.
+          - db_type: "pg_catalog.numeric"
+            go_type:
+              import: "github.com/shopspring/decimal"
+              type: "Decimal"
+          - db_type: "pg_catalog.numeric"
+            nullable: true
+            go_type:
+              import: "github.com/shopspring/decimal"
+              type: "NullDecimal"
+          # UUIDs -> google/uuid (instead of pgtype.UUID).
+          - db_type: "uuid"
+            go_type:
+              import: "github.com/google/uuid"
+              type: "UUID"
+          - db_type: "uuid"
+            nullable: true
+            go_type:
+              import: "github.com/google/uuid"
+              type: "NullUUID"

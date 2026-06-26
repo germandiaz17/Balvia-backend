@@ -1,0 +1,25 @@
+# Binaries / build output
+/bin/
+/tmp/
+*.exe
+*.out
+
+# Environment (never commit real secrets; .env.example IS committed)
+.env
+.env.*
+!.env.example
+
+# Go
+vendor/
+*.test
+coverage.out
+coverage.html
+
+# Editor / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# Claude Code local overrides (settings.json IS shared; .local is per-machine)
+.claude/settings.local.json
