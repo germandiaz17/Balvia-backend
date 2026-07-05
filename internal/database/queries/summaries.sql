@@ -20,6 +20,21 @@ GROUP BY category_id
 ORDER BY total DESC
 LIMIT 1;
 
+-- name: SummarizePeriodTotalsInRange :one
+-- Same aggregates as SummarizePeriodTotals but filtered to [from_date, to_date].
+-- Used to compute biweekly / weekly sub-period breakdowns on the fly.
+SELECT
+    COALESCE(SUM(amount) FILTER (WHERE transaction_type = 'income'), 0)::numeric  AS total_income,
+    COALESCE(SUM(amount) FILTER (WHERE transaction_type = 'expense'), 0)::numeric AS total_expenses,
+    COALESCE(SUM(amount) FILTER (WHERE transaction_type = 'transfer'), 0)::numeric AS total_transfers,
+    COUNT(*)::int                                                AS transaction_count,
+    COUNT(*) FILTER (WHERE transaction_type = 'expense')::int    AS expense_transaction_count,
+    COUNT(*) FILTER (WHERE transaction_type = 'income')::int     AS income_transaction_count
+FROM transactions
+WHERE tracking_period_id = sqlc.arg(tracking_period_id)
+  AND transaction_date BETWEEN sqlc.arg(from_date) AND sqlc.arg(to_date)
+  AND deleted_at IS NULL;
+
 -- name: CreateTrackingPeriodSummary :one
 INSERT INTO tracking_period_summaries (
     tracking_period_id, user_id,

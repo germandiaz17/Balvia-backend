@@ -136,6 +136,36 @@ func (q *Queries) GetTrackingPeriodByID(ctx context.Context, id uuid.UUID) (Trac
 	return i, err
 }
 
+const getTrackingPeriodForUser = `-- name: GetTrackingPeriodForUser :one
+SELECT id, user_id, start_date, end_date, status, sequence_number, config_start_day, config_duration_days, closed_at, created_at, updated_at FROM tracking_periods
+WHERE id = $1 AND user_id = $2
+`
+
+type GetTrackingPeriodForUserParams struct {
+	ID     uuid.UUID `json:"id"`
+	UserID uuid.UUID `json:"user_id"`
+}
+
+// Like GetTrackingPeriodByID but scoped to the owner — safe to expose directly.
+func (q *Queries) GetTrackingPeriodForUser(ctx context.Context, arg GetTrackingPeriodForUserParams) (TrackingPeriod, error) {
+	row := q.db.QueryRow(ctx, getTrackingPeriodForUser, arg.ID, arg.UserID)
+	var i TrackingPeriod
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.StartDate,
+		&i.EndDate,
+		&i.Status,
+		&i.SequenceNumber,
+		&i.ConfigStartDay,
+		&i.ConfigDurationDays,
+		&i.ClosedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const listDueActivePeriods = `-- name: ListDueActivePeriods :many
 SELECT id, user_id, start_date, end_date, status, sequence_number, config_start_day, config_duration_days, closed_at, created_at, updated_at FROM tracking_periods
 WHERE status = 'active' AND end_date < $1

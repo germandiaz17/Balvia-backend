@@ -34,3 +34,8 @@ RETURNING *;
 SELECT * FROM tracking_periods
 WHERE status = 'active' AND end_date < $1
 ORDER BY user_id, sequence_number;
+
+-- name: GetTrackingPeriodForUser :one
+-- Like GetTrackingPeriodByID but scoped to the owner — safe to expose directly.
+SELECT * FROM tracking_periods
+WHERE id = sqlc.arg(id) AND user_id = sqlc.arg(user_id);

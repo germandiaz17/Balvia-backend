@@ -35,6 +35,8 @@ type Querier interface {
 	GetRefreshToken(ctx context.Context, tokenHash string) (RefreshToken, error)
 	GetTopExpenseCategory(ctx context.Context, trackingPeriodID uuid.UUID) (GetTopExpenseCategoryRow, error)
 	GetTrackingPeriodByID(ctx context.Context, id uuid.UUID) (TrackingPeriod, error)
+	// Like GetTrackingPeriodByID but scoped to the owner — safe to expose directly.
+	GetTrackingPeriodForUser(ctx context.Context, arg GetTrackingPeriodForUserParams) (TrackingPeriod, error)
 	GetTransaction(ctx context.Context, arg GetTransactionParams) (Transaction, error)
 	GetUserByEmail(ctx context.Context, email string) (User, error)
 	GetUserByID(ctx context.Context, id uuid.UUID) (User, error)
@@ -56,6 +58,9 @@ type Querier interface {
 	SoftDeleteCategory(ctx context.Context, arg SoftDeleteCategoryParams) (uuid.UUID, error)
 	SoftDeleteTransaction(ctx context.Context, arg SoftDeleteTransactionParams) (Transaction, error)
 	SummarizePeriodTotals(ctx context.Context, trackingPeriodID uuid.UUID) (SummarizePeriodTotalsRow, error)
+	// Same aggregates as SummarizePeriodTotals but filtered to [from_date, to_date].
+	// Used to compute biweekly / weekly sub-period breakdowns on the fly.
+	SummarizePeriodTotalsInRange(ctx context.Context, arg SummarizePeriodTotalsInRangeParams) (SummarizePeriodTotalsInRangeRow, error)
 	UpdateAccount(ctx context.Context, arg UpdateAccountParams) (Account, error)
 	UpdateBudget(ctx context.Context, arg UpdateBudgetParams) (Budget, error)
 	UpdateCategory(ctx context.Context, arg UpdateCategoryParams) (Category, error)

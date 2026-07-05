@@ -9,6 +9,7 @@ import (
 	"context"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/shopspring/decimal"
 )
 
@@ -140,6 +141,51 @@ type SummarizePeriodTotalsRow struct {
 func (q *Queries) SummarizePeriodTotals(ctx context.Context, trackingPeriodID uuid.UUID) (SummarizePeriodTotalsRow, error) {
 	row := q.db.QueryRow(ctx, summarizePeriodTotals, trackingPeriodID)
 	var i SummarizePeriodTotalsRow
+	err := row.Scan(
+		&i.TotalIncome,
+		&i.TotalExpenses,
+		&i.TotalTransfers,
+		&i.TransactionCount,
+		&i.ExpenseTransactionCount,
+		&i.IncomeTransactionCount,
+	)
+	return i, err
+}
+
+const summarizePeriodTotalsInRange = `-- name: SummarizePeriodTotalsInRange :one
+SELECT
+    COALESCE(SUM(amount) FILTER (WHERE transaction_type = 'income'), 0)::numeric  AS total_income,
+    COALESCE(SUM(amount) FILTER (WHERE transaction_type = 'expense'), 0)::numeric AS total_expenses,
+    COALESCE(SUM(amount) FILTER (WHERE transaction_type = 'transfer'), 0)::numeric AS total_transfers,
+    COUNT(*)::int                                                AS transaction_count,
+    COUNT(*) FILTER (WHERE transaction_type = 'expense')::int    AS expense_transaction_count,
+    COUNT(*) FILTER (WHERE transaction_type = 'income')::int     AS income_transaction_count
+FROM transactions
+WHERE tracking_period_id = $1
+  AND transaction_date BETWEEN $2 AND $3
+  AND deleted_at IS NULL
+`
+
+type SummarizePeriodTotalsInRangeParams struct {
+	TrackingPeriodID uuid.UUID   `json:"tracking_period_id"`
+	FromDate         pgtype.Date `json:"from_date"`
+	ToDate           pgtype.Date `json:"to_date"`
+}
+
+type SummarizePeriodTotalsInRangeRow struct {
+	TotalIncome             decimal.Decimal `json:"total_income"`
+	TotalExpenses           decimal.Decimal `json:"total_expenses"`
+	TotalTransfers          decimal.Decimal `json:"total_transfers"`
+	TransactionCount        int32           `json:"transaction_count"`
+	ExpenseTransactionCount int32           `json:"expense_transaction_count"`
+	IncomeTransactionCount  int32           `json:"income_transaction_count"`
+}
+
+// Same aggregates as SummarizePeriodTotals but filtered to [from_date, to_date].
+// Used to compute biweekly / weekly sub-period breakdowns on the fly.
+func (q *Queries) SummarizePeriodTotalsInRange(ctx context.Context, arg SummarizePeriodTotalsInRangeParams) (SummarizePeriodTotalsInRangeRow, error) {
+	row := q.db.QueryRow(ctx, summarizePeriodTotalsInRange, arg.TrackingPeriodID, arg.FromDate, arg.ToDate)
+	var i SummarizePeriodTotalsInRangeRow
 	err := row.Scan(
 		&i.TotalIncome,
 		&i.TotalExpenses,
