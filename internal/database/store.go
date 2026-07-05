@@ -38,6 +38,11 @@ type Store interface {
 	// ClosePeriodTx closes a tracking period, snapshots its summary, generates
 	// the next (contiguous) period and copies its budgets — all atomically.
 	ClosePeriodTx(ctx context.Context, periodID, userID uuid.UUID) (ClosePeriodResult, error)
+
+	// CreateContributionTx atomically inserts a savings goal contribution and
+	// updates the goal's current_amount. If the new total meets or exceeds the
+	// target_amount the goal is marked achieved.
+	CreateContributionTx(ctx context.Context, arg CreateContributionTxParams) (CreateContributionTxResult, error)
 }
 
 // SQLStore is the pgx-backed implementation of Store.

@@ -20,7 +20,8 @@ func mapDomainError(err error) error {
 		return fiber.NewError(fiber.StatusConflict, err.Error())
 	case errors.Is(err, domain.ErrNotFound),
 		errors.Is(err, domain.ErrAccountNotFound),
-		errors.Is(err, domain.ErrCategoryNotFound):
+		errors.Is(err, domain.ErrCategoryNotFound),
+		errors.Is(err, domain.ErrGoalNotFound):
 		return fiber.NewError(fiber.StatusNotFound, err.Error())
 	case errors.Is(err, domain.ErrInvalidCredentials),
 		errors.Is(err, domain.ErrInvalidToken):
@@ -30,7 +31,8 @@ func mapDomainError(err error) error {
 		errors.Is(err, domain.ErrDateOutsidePeriod),
 		errors.Is(err, domain.ErrInvalidAmount),
 		errors.Is(err, domain.ErrPeriodClosed),
-		errors.Is(err, domain.ErrInvalidThreshold):
+		errors.Is(err, domain.ErrInvalidThreshold),
+		errors.Is(err, domain.ErrInvalidGoalDates):
 		return fiber.NewError(fiber.StatusUnprocessableEntity, err.Error())
 	default:
 		return err

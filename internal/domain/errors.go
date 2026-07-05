@@ -45,4 +45,10 @@ var (
 
 	// ErrInvalidThreshold is returned when an alert threshold is out of the 0-100 range.
 	ErrInvalidThreshold = errors.New("alert thresholds must be between 0 and 100")
+
+	// ErrGoalNotFound is returned when a savings goal does not exist or is not the user's.
+	ErrGoalNotFound = errors.New("savings goal not found")
+
+	// ErrInvalidGoalDates is returned when target_date is not strictly after start_date.
+	ErrInvalidGoalDates = errors.New("target_date must be after start_date")
 )

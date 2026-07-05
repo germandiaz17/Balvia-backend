@@ -13,11 +13,19 @@ import (
 
 type Querier interface {
 	AdjustAccountBalance(ctx context.Context, arg AdjustAccountBalanceParams) error
+	// Atomically adds the contribution amount to current_amount. If the resulting
+	// current_amount meets or exceeds target_amount and the goal is not already
+	// achieved, marks it achieved and sets achieved_at = NOW().
+	// NOTE: CASE expressions reference OLD column values (pre-update), so
+	// current_amount + $amount correctly computes the post-update total.
+	ApplyGoalContribution(ctx context.Context, arg ApplyGoalContributionParams) (SavingsGoal, error)
 	ClosePeriod(ctx context.Context, id uuid.UUID) (TrackingPeriod, error)
 	CreateAccount(ctx context.Context, arg CreateAccountParams) (Account, error)
 	CreateBudget(ctx context.Context, arg CreateBudgetParams) (Budget, error)
 	CreateCategory(ctx context.Context, arg CreateCategoryParams) (Category, error)
 	CreateRefreshToken(ctx context.Context, arg CreateRefreshTokenParams) (RefreshToken, error)
+	CreateSavingsGoal(ctx context.Context, arg CreateSavingsGoalParams) (SavingsGoal, error)
+	CreateSavingsGoalContribution(ctx context.Context, arg CreateSavingsGoalContributionParams) (SavingsGoalContribution, error)
 	CreateTrackingPeriod(ctx context.Context, arg CreateTrackingPeriodParams) (TrackingPeriod, error)
 	CreateTrackingPeriodSummary(ctx context.Context, arg CreateTrackingPeriodSummaryParams) (TrackingPeriodSummary, error)
 	CreateTransaction(ctx context.Context, arg CreateTransactionParams) (Transaction, error)
@@ -33,6 +41,7 @@ type Querier interface {
 	GetOwnedCategory(ctx context.Context, arg GetOwnedCategoryParams) (Category, error)
 	// Returns a usable (not revoked, not expired) refresh token by its hash.
 	GetRefreshToken(ctx context.Context, tokenHash string) (RefreshToken, error)
+	GetSavingsGoal(ctx context.Context, arg GetSavingsGoalParams) (SavingsGoal, error)
 	GetTopExpenseCategory(ctx context.Context, trackingPeriodID uuid.UUID) (GetTopExpenseCategoryRow, error)
 	GetTrackingPeriodByID(ctx context.Context, id uuid.UUID) (TrackingPeriod, error)
 	// Like GetTrackingPeriodByID but scoped to the owner — safe to expose directly.
@@ -47,8 +56,10 @@ type Querier interface {
 	ListBudgetsForUser(ctx context.Context, arg ListBudgetsForUserParams) ([]Budget, error)
 	// System categories plus the user's own, usable for selection.
 	ListCategoriesForUser(ctx context.Context, userID uuid.NullUUID) ([]Category, error)
+	ListContributionsForGoal(ctx context.Context, arg ListContributionsForGoalParams) ([]SavingsGoalContribution, error)
 	// Active periods whose end_date is strictly before the given date (i.e. over).
 	ListDueActivePeriods(ctx context.Context, endDate pgtype.Date) ([]TrackingPeriod, error)
+	ListSavingsGoalsForUser(ctx context.Context, userID uuid.UUID) ([]SavingsGoal, error)
 	ListSystemCategories(ctx context.Context) ([]Category, error)
 	ListTrackingPeriodsByUser(ctx context.Context, userID uuid.UUID) ([]TrackingPeriod, error)
 	ListTransactionsByPeriod(ctx context.Context, arg ListTransactionsByPeriodParams) ([]Transaction, error)
@@ -56,6 +67,7 @@ type Querier interface {
 	RevokeRefreshToken(ctx context.Context, id uuid.UUID) error
 	SoftDeleteAccount(ctx context.Context, arg SoftDeleteAccountParams) (uuid.UUID, error)
 	SoftDeleteCategory(ctx context.Context, arg SoftDeleteCategoryParams) (uuid.UUID, error)
+	SoftDeleteSavingsGoal(ctx context.Context, arg SoftDeleteSavingsGoalParams) (uuid.UUID, error)
 	SoftDeleteTransaction(ctx context.Context, arg SoftDeleteTransactionParams) (Transaction, error)
 	SummarizePeriodTotals(ctx context.Context, trackingPeriodID uuid.UUID) (SummarizePeriodTotalsRow, error)
 	// Same aggregates as SummarizePeriodTotals but filtered to [from_date, to_date].
@@ -64,6 +76,7 @@ type Querier interface {
 	UpdateAccount(ctx context.Context, arg UpdateAccountParams) (Account, error)
 	UpdateBudget(ctx context.Context, arg UpdateBudgetParams) (Budget, error)
 	UpdateCategory(ctx context.Context, arg UpdateCategoryParams) (Category, error)
+	UpdateSavingsGoal(ctx context.Context, arg UpdateSavingsGoalParams) (SavingsGoal, error)
 	// tracking_period_id is intentionally NOT updatable (a transaction stays in its
 	// period). The validate_transaction_period trigger re-checks date/period here.
 	UpdateTransaction(ctx context.Context, arg UpdateTransactionParams) (Transaction, error)
