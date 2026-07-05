@@ -23,6 +23,7 @@ type Querier interface {
 	CreateAccount(ctx context.Context, arg CreateAccountParams) (Account, error)
 	CreateBudget(ctx context.Context, arg CreateBudgetParams) (Budget, error)
 	CreateCategory(ctx context.Context, arg CreateCategoryParams) (Category, error)
+	CreateRecurringTransaction(ctx context.Context, arg CreateRecurringTransactionParams) (RecurringTransaction, error)
 	CreateRefreshToken(ctx context.Context, arg CreateRefreshTokenParams) (RefreshToken, error)
 	CreateSavingsGoal(ctx context.Context, arg CreateSavingsGoalParams) (SavingsGoal, error)
 	CreateSavingsGoalContribution(ctx context.Context, arg CreateSavingsGoalContributionParams) (SavingsGoalContribution, error)
@@ -39,6 +40,7 @@ type Querier interface {
 	GetCategoryForUser(ctx context.Context, arg GetCategoryForUserParams) (Category, error)
 	// Only the user's own (non-system) category; used for update/delete.
 	GetOwnedCategory(ctx context.Context, arg GetOwnedCategoryParams) (Category, error)
+	GetRecurringTransaction(ctx context.Context, arg GetRecurringTransactionParams) (RecurringTransaction, error)
 	// Returns a usable (not revoked, not expired) refresh token by its hash.
 	GetRefreshToken(ctx context.Context, tokenHash string) (RefreshToken, error)
 	GetSavingsGoal(ctx context.Context, arg GetSavingsGoalParams) (SavingsGoal, error)
@@ -59,6 +61,7 @@ type Querier interface {
 	ListContributionsForGoal(ctx context.Context, arg ListContributionsForGoalParams) ([]SavingsGoalContribution, error)
 	// Active periods whose end_date is strictly before the given date (i.e. over).
 	ListDueActivePeriods(ctx context.Context, endDate pgtype.Date) ([]TrackingPeriod, error)
+	ListRecurringTransactionsForUser(ctx context.Context, userID uuid.UUID) ([]RecurringTransaction, error)
 	ListSavingsGoalsForUser(ctx context.Context, userID uuid.UUID) ([]SavingsGoal, error)
 	ListSystemCategories(ctx context.Context) ([]Category, error)
 	ListTrackingPeriodsByUser(ctx context.Context, userID uuid.UUID) ([]TrackingPeriod, error)
@@ -67,6 +70,7 @@ type Querier interface {
 	RevokeRefreshToken(ctx context.Context, id uuid.UUID) error
 	SoftDeleteAccount(ctx context.Context, arg SoftDeleteAccountParams) (uuid.UUID, error)
 	SoftDeleteCategory(ctx context.Context, arg SoftDeleteCategoryParams) (uuid.UUID, error)
+	SoftDeleteRecurringTransaction(ctx context.Context, arg SoftDeleteRecurringTransactionParams) (uuid.UUID, error)
 	SoftDeleteSavingsGoal(ctx context.Context, arg SoftDeleteSavingsGoalParams) (uuid.UUID, error)
 	SoftDeleteTransaction(ctx context.Context, arg SoftDeleteTransactionParams) (Transaction, error)
 	SummarizePeriodTotals(ctx context.Context, trackingPeriodID uuid.UUID) (SummarizePeriodTotalsRow, error)
@@ -76,6 +80,7 @@ type Querier interface {
 	UpdateAccount(ctx context.Context, arg UpdateAccountParams) (Account, error)
 	UpdateBudget(ctx context.Context, arg UpdateBudgetParams) (Budget, error)
 	UpdateCategory(ctx context.Context, arg UpdateCategoryParams) (Category, error)
+	UpdateRecurringTransaction(ctx context.Context, arg UpdateRecurringTransactionParams) (RecurringTransaction, error)
 	UpdateSavingsGoal(ctx context.Context, arg UpdateSavingsGoalParams) (SavingsGoal, error)
 	// tracking_period_id is intentionally NOT updatable (a transaction stays in its
 	// period). The validate_transaction_period trigger re-checks date/period here.

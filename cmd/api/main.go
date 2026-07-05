@@ -83,6 +83,7 @@ func main() {
 	budgetHandler := handlers.NewBudgetHandler(services.NewBudgetService(store), validate)
 	trackingPeriodHandler := handlers.NewTrackingPeriodHandler(services.NewPeriodQueryService(store), validate)
 	savingsGoalHandler := handlers.NewSavingsGoalHandler(services.NewSavingsGoalService(store), validate)
+	recurringHandler := handlers.NewRecurringTransactionHandler(services.NewRecurringTransactionService(store), validate)
 
 	periodSvc := services.NewPeriodService(store, log)
 
@@ -98,6 +99,7 @@ func main() {
 	budgetHandler.Register(authed)
 	trackingPeriodHandler.Register(authed)
 	savingsGoalHandler.Register(authed)
+	recurringHandler.Register(authed)
 
 	// Liveness: is the process up? (no external dependencies)
 	app.Get("/health", func(c *fiber.Ctx) error {

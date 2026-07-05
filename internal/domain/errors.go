@@ -51,4 +51,13 @@ var (
 
 	// ErrInvalidGoalDates is returned when target_date is not strictly after start_date.
 	ErrInvalidGoalDates = errors.New("target_date must be after start_date")
+
+	// ErrInvalidFrequency is returned when the frequency value is not one of the
+	// allowed enum values (daily, weekly, biweekly, monthly, yearly, custom).
+	ErrInvalidFrequency = errors.New("frequency must be one of: daily, weekly, biweekly, monthly, yearly, custom")
+
+	// ErrInvalidRecurringConfig is returned when a combination of recurring-template
+	// fields violates a business rule (e.g. custom without custom_interval_days,
+	// day ranges out of bounds, end_date not after start_date, invalid transaction type).
+	ErrInvalidRecurringConfig = errors.New("invalid recurring transaction configuration")
 )

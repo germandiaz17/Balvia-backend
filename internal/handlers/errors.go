@@ -32,7 +32,9 @@ func mapDomainError(err error) error {
 		errors.Is(err, domain.ErrInvalidAmount),
 		errors.Is(err, domain.ErrPeriodClosed),
 		errors.Is(err, domain.ErrInvalidThreshold),
-		errors.Is(err, domain.ErrInvalidGoalDates):
+		errors.Is(err, domain.ErrInvalidGoalDates),
+		errors.Is(err, domain.ErrInvalidFrequency),
+		errors.Is(err, domain.ErrInvalidRecurringConfig):
 		return fiber.NewError(fiber.StatusUnprocessableEntity, err.Error())
 	default:
 		return err
