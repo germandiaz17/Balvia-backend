@@ -23,8 +23,10 @@ type Querier interface {
 	CreateTransaction(ctx context.Context, arg CreateTransactionParams) (Transaction, error)
 	CreateUser(ctx context.Context, arg CreateUserParams) (User, error)
 	CreateUserSettings(ctx context.Context, arg CreateUserSettingsParams) (UserSetting, error)
+	DeleteBudget(ctx context.Context, arg DeleteBudgetParams) (uuid.UUID, error)
 	GetAccount(ctx context.Context, arg GetAccountParams) (Account, error)
 	GetActiveTrackingPeriod(ctx context.Context, userID uuid.UUID) (TrackingPeriod, error)
+	GetBudget(ctx context.Context, arg GetBudgetParams) (Budget, error)
 	// A category is usable if it belongs to the user or is a system category.
 	GetCategoryForUser(ctx context.Context, arg GetCategoryForUserParams) (Category, error)
 	// Only the user's own (non-system) category; used for update/delete.
@@ -38,7 +40,9 @@ type Querier interface {
 	GetUserByID(ctx context.Context, id uuid.UUID) (User, error)
 	GetUserSettingsByUserID(ctx context.Context, userID uuid.UUID) (UserSetting, error)
 	ListAccounts(ctx context.Context, userID uuid.UUID) ([]Account, error)
+	// Internal: used when copying budgets onto a freshly generated period.
 	ListBudgetsByPeriod(ctx context.Context, trackingPeriodID uuid.UUID) ([]Budget, error)
+	ListBudgetsForUser(ctx context.Context, arg ListBudgetsForUserParams) ([]Budget, error)
 	// System categories plus the user's own, usable for selection.
 	ListCategoriesForUser(ctx context.Context, userID uuid.NullUUID) ([]Category, error)
 	// Active periods whose end_date is strictly before the given date (i.e. over).
@@ -53,6 +57,7 @@ type Querier interface {
 	SoftDeleteTransaction(ctx context.Context, arg SoftDeleteTransactionParams) (Transaction, error)
 	SummarizePeriodTotals(ctx context.Context, trackingPeriodID uuid.UUID) (SummarizePeriodTotalsRow, error)
 	UpdateAccount(ctx context.Context, arg UpdateAccountParams) (Account, error)
+	UpdateBudget(ctx context.Context, arg UpdateBudgetParams) (Budget, error)
 	UpdateCategory(ctx context.Context, arg UpdateCategoryParams) (Category, error)
 	// tracking_period_id is intentionally NOT updatable (a transaction stays in its
 	// period). The validate_transaction_period trigger re-checks date/period here.

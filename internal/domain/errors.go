@@ -34,4 +34,15 @@ var (
 
 	// ErrInvalidToken is returned when a refresh token is missing/expired/revoked.
 	ErrInvalidToken = errors.New("invalid or expired token")
+
+	// ErrBudgetExists is returned when a budget already exists for the given
+	// (tracking period, category) pair.
+	ErrBudgetExists = errors.New("a budget already exists for this category in the period")
+
+	// ErrPeriodClosed is returned when trying to mutate data anchored to a closed
+	// (immutable) tracking period.
+	ErrPeriodClosed = errors.New("the tracking period is closed and cannot be modified")
+
+	// ErrInvalidThreshold is returned when an alert threshold is out of the 0-100 range.
+	ErrInvalidThreshold = errors.New("alert thresholds must be between 0 and 100")
 )

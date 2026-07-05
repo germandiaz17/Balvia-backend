@@ -68,12 +68,60 @@ func (q *Queries) CreateBudget(ctx context.Context, arg CreateBudgetParams) (Bud
 	return i, err
 }
 
+const deleteBudget = `-- name: DeleteBudget :one
+DELETE FROM budgets
+WHERE id = $1 AND user_id = $2
+RETURNING id
+`
+
+type DeleteBudgetParams struct {
+	ID     uuid.UUID `json:"id"`
+	UserID uuid.UUID `json:"user_id"`
+}
+
+func (q *Queries) DeleteBudget(ctx context.Context, arg DeleteBudgetParams) (uuid.UUID, error) {
+	row := q.db.QueryRow(ctx, deleteBudget, arg.ID, arg.UserID)
+	var id uuid.UUID
+	err := row.Scan(&id)
+	return id, err
+}
+
+const getBudget = `-- name: GetBudget :one
+SELECT id, user_id, tracking_period_id, category_id, amount, currency, alert_threshold_warning, alert_threshold_critical, notes, created_at, updated_at FROM budgets
+WHERE id = $1 AND user_id = $2
+`
+
+type GetBudgetParams struct {
+	ID     uuid.UUID `json:"id"`
+	UserID uuid.UUID `json:"user_id"`
+}
+
+func (q *Queries) GetBudget(ctx context.Context, arg GetBudgetParams) (Budget, error) {
+	row := q.db.QueryRow(ctx, getBudget, arg.ID, arg.UserID)
+	var i Budget
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.TrackingPeriodID,
+		&i.CategoryID,
+		&i.Amount,
+		&i.Currency,
+		&i.AlertThresholdWarning,
+		&i.AlertThresholdCritical,
+		&i.Notes,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const listBudgetsByPeriod = `-- name: ListBudgetsByPeriod :many
 SELECT id, user_id, tracking_period_id, category_id, amount, currency, alert_threshold_warning, alert_threshold_critical, notes, created_at, updated_at FROM budgets
 WHERE tracking_period_id = $1
 ORDER BY created_at
 `
 
+// Internal: used when copying budgets onto a freshly generated period.
 func (q *Queries) ListBudgetsByPeriod(ctx context.Context, trackingPeriodID uuid.UUID) ([]Budget, error) {
 	rows, err := q.db.Query(ctx, listBudgetsByPeriod, trackingPeriodID)
 	if err != nil {
@@ -104,4 +152,99 @@ func (q *Queries) ListBudgetsByPeriod(ctx context.Context, trackingPeriodID uuid
 		return nil, err
 	}
 	return items, nil
+}
+
+const listBudgetsForUser = `-- name: ListBudgetsForUser :many
+SELECT id, user_id, tracking_period_id, category_id, amount, currency, alert_threshold_warning, alert_threshold_critical, notes, created_at, updated_at FROM budgets
+WHERE user_id = $1 AND tracking_period_id = $2
+ORDER BY created_at
+`
+
+type ListBudgetsForUserParams struct {
+	UserID           uuid.UUID `json:"user_id"`
+	TrackingPeriodID uuid.UUID `json:"tracking_period_id"`
+}
+
+func (q *Queries) ListBudgetsForUser(ctx context.Context, arg ListBudgetsForUserParams) ([]Budget, error) {
+	rows, err := q.db.Query(ctx, listBudgetsForUser, arg.UserID, arg.TrackingPeriodID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Budget{}
+	for rows.Next() {
+		var i Budget
+		if err := rows.Scan(
+			&i.ID,
+			&i.UserID,
+			&i.TrackingPeriodID,
+			&i.CategoryID,
+			&i.Amount,
+			&i.Currency,
+			&i.AlertThresholdWarning,
+			&i.AlertThresholdCritical,
+			&i.Notes,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const updateBudget = `-- name: UpdateBudget :one
+UPDATE budgets
+SET category_id = $1,
+    amount = $2,
+    currency = $3,
+    alert_threshold_warning = $4,
+    alert_threshold_critical = $5,
+    notes = $6,
+    updated_at = NOW()
+WHERE id = $7 AND user_id = $8
+RETURNING id, user_id, tracking_period_id, category_id, amount, currency, alert_threshold_warning, alert_threshold_critical, notes, created_at, updated_at
+`
+
+type UpdateBudgetParams struct {
+	CategoryID             uuid.NullUUID   `json:"category_id"`
+	Amount                 decimal.Decimal `json:"amount"`
+	Currency               string          `json:"currency"`
+	AlertThresholdWarning  decimal.Decimal `json:"alert_threshold_warning"`
+	AlertThresholdCritical decimal.Decimal `json:"alert_threshold_critical"`
+	Notes                  *string         `json:"notes"`
+	ID                     uuid.UUID       `json:"id"`
+	UserID                 uuid.UUID       `json:"user_id"`
+}
+
+func (q *Queries) UpdateBudget(ctx context.Context, arg UpdateBudgetParams) (Budget, error) {
+	row := q.db.QueryRow(ctx, updateBudget,
+		arg.CategoryID,
+		arg.Amount,
+		arg.Currency,
+		arg.AlertThresholdWarning,
+		arg.AlertThresholdCritical,
+		arg.Notes,
+		arg.ID,
+		arg.UserID,
+	)
+	var i Budget
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.TrackingPeriodID,
+		&i.CategoryID,
+		&i.Amount,
+		&i.Currency,
+		&i.AlertThresholdWarning,
+		&i.AlertThresholdCritical,
+		&i.Notes,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
 }

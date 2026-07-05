@@ -15,7 +15,8 @@ const dateLayout = "2006-01-02"
 // are returned as-is so the global ErrorHandler turns them into a 500.
 func mapDomainError(err error) error {
 	switch {
-	case errors.Is(err, domain.ErrEmailAlreadyExists):
+	case errors.Is(err, domain.ErrEmailAlreadyExists),
+		errors.Is(err, domain.ErrBudgetExists):
 		return fiber.NewError(fiber.StatusConflict, err.Error())
 	case errors.Is(err, domain.ErrNotFound),
 		errors.Is(err, domain.ErrAccountNotFound),
@@ -27,7 +28,9 @@ func mapDomainError(err error) error {
 	case errors.Is(err, domain.ErrNoActivePeriod),
 		errors.Is(err, domain.ErrInvalidTransfer),
 		errors.Is(err, domain.ErrDateOutsidePeriod),
-		errors.Is(err, domain.ErrInvalidAmount):
+		errors.Is(err, domain.ErrInvalidAmount),
+		errors.Is(err, domain.ErrPeriodClosed),
+		errors.Is(err, domain.ErrInvalidThreshold):
 		return fiber.NewError(fiber.StatusUnprocessableEntity, err.Error())
 	default:
 		return err

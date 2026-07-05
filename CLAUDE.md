@@ -193,8 +193,10 @@ Cosas que potencialmente podrían ser reutilizables por otros proyectos.
 
 > **Contrato de API**: documentado en `../docs/API_CONTRACT.md` (fuente de verdad back⇆front). Actualízalo en el MISMO cambio en que toques un endpoint. Estado/backlog en `../docs/ROADMAP.md`.
 
+- **CRUD de budgets (paso 13)**: `/api/v1/budgets` (Create/List/Get/Update/Delete). Atados al **periodo activo** al crear (lazy-close incluido); `category_id` opcional (null = presupuesto global); **único por (periodo, categoría)** → 409 vía `ErrBudgetExists`; umbrales de alerta 0–100 (default 80/100); presupuestos de periodos **cerrados son inmutables** (`ErrPeriodClosed`, 422) en update/delete. Hard delete (sin `deleted_at`). Con tests de servicio.
+
 ### 🔄 En progreso
-- (siguiente) Budgets / metas de ahorro / recurrentes (CRUD), o deploy
+- (siguiente) Metas de ahorro / recurrentes (CRUD), o deploy
 
 ### ⏭️ Próximos pasos / pendientes conocidos
 - **Insights "final" ricos** (los 9 tipos: reduction_opportunity, vs_previous, top_merchants...) y breakdowns JSONB del summary (expense_by_category/day, budget_performance) → paso de analítica aparte

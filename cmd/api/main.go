@@ -80,6 +80,7 @@ func main() {
 
 	accountHandler := handlers.NewAccountHandler(services.NewAccountService(store), validate)
 	categoryHandler := handlers.NewCategoryHandler(services.NewCategoryService(store), validate)
+	budgetHandler := handlers.NewBudgetHandler(services.NewBudgetService(store), validate)
 
 	periodSvc := services.NewPeriodService(store, log)
 
@@ -92,6 +93,7 @@ func main() {
 	transactionHandler.Register(authed)
 	accountHandler.Register(authed)
 	categoryHandler.Register(authed)
+	budgetHandler.Register(authed)
 
 	// Liveness: is the process up? (no external dependencies)
 	app.Get("/health", func(c *fiber.Ctx) error {
