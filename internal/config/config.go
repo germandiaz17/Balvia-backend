@@ -58,9 +58,13 @@ func Load() (Config, error) {
 }
 
 // getEnv returns the value of the env var key, or fallback if it is unset/empty.
+// Values are trimmed so stray whitespace (e.g. from Makefile-exported .env vars
+// with inline comments) can't corrupt things like the listen port.
 func getEnv(key, fallback string) string {
-	if v, ok := os.LookupEnv(key); ok && v != "" {
-		return v
+	if v, ok := os.LookupEnv(key); ok {
+		if trimmed := strings.TrimSpace(v); trimmed != "" {
+			return trimmed
+		}
 	}
 	return fallback
 }
