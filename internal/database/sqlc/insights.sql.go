@@ -124,6 +124,104 @@ func (q *Queries) CreateTrackingPeriodInsight(ctx context.Context, arg CreateTra
 	return i, err
 }
 
+const deleteDuringInsightsByPeriod = `-- name: DeleteDuringInsightsByPeriod :exec
+DELETE FROM tracking_period_insights
+WHERE tracking_period_id = $1
+  AND user_id = $2
+  AND calculation_phase = 'during'
+`
+
+type DeleteDuringInsightsByPeriodParams struct {
+	TrackingPeriodID uuid.UUID `json:"tracking_period_id"`
+	UserID           uuid.UUID `json:"user_id"`
+}
+
+// Deletes all "during" insights for a period. Used before regenerating them
+// (replace strategy) and when closing the period (cleanup before final insights).
+func (q *Queries) DeleteDuringInsightsByPeriod(ctx context.Context, arg DeleteDuringInsightsByPeriodParams) error {
+	_, err := q.db.Exec(ctx, deleteDuringInsightsByPeriod, arg.TrackingPeriodID, arg.UserID)
+	return err
+}
+
+const deleteImmediateDuringInsightsByPeriod = `-- name: DeleteImmediateDuringInsightsByPeriod :exec
+DELETE FROM tracking_period_insights
+WHERE tracking_period_id = $1
+  AND user_id = $2
+  AND calculation_phase = 'during'
+  AND insight_type IN ('spending_pace', 'budget_warning', 'budget_exceeded')
+`
+
+type DeleteImmediateDuringInsightsByPeriodParams struct {
+	TrackingPeriodID uuid.UUID `json:"tracking_period_id"`
+	UserID           uuid.UUID `json:"user_id"`
+}
+
+// Deletes only the "immediate" during insights (those recalculated on every
+// transaction mutation: spending_pace, budget_warning, budget_exceeded).
+// The "lazy" during insights (ant_expenses_early, unusual_expense,
+// vs_previous_partial, goal_progress_alert) are preserved until the next
+// lazy refresh via GET /tracking-periods/:id/insights.
+func (q *Queries) DeleteImmediateDuringInsightsByPeriod(ctx context.Context, arg DeleteImmediateDuringInsightsByPeriodParams) error {
+	_, err := q.db.Exec(ctx, deleteImmediateDuringInsightsByPeriod, arg.TrackingPeriodID, arg.UserID)
+	return err
+}
+
+const listDuringInsightsByPeriod = `-- name: ListDuringInsightsByPeriod :many
+SELECT id, tracking_period_id, user_id, insight_type, calculation_phase, severity, title, message, action_label, action_target, data, related_category_id, related_account_id, related_goal_id, is_dismissed, dismissed_at, valid_from, valid_until, created_at, updated_at FROM tracking_period_insights
+WHERE tracking_period_id = $1
+  AND user_id = $2
+  AND calculation_phase = 'during'
+  AND is_dismissed = FALSE
+ORDER BY created_at DESC
+`
+
+type ListDuringInsightsByPeriodParams struct {
+	TrackingPeriodID uuid.UUID `json:"tracking_period_id"`
+	UserID           uuid.UUID `json:"user_id"`
+}
+
+// Returns only the "during" (in-progress) insights for an active period, newest first.
+func (q *Queries) ListDuringInsightsByPeriod(ctx context.Context, arg ListDuringInsightsByPeriodParams) ([]TrackingPeriodInsight, error) {
+	rows, err := q.db.Query(ctx, listDuringInsightsByPeriod, arg.TrackingPeriodID, arg.UserID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []TrackingPeriodInsight{}
+	for rows.Next() {
+		var i TrackingPeriodInsight
+		if err := rows.Scan(
+			&i.ID,
+			&i.TrackingPeriodID,
+			&i.UserID,
+			&i.InsightType,
+			&i.CalculationPhase,
+			&i.Severity,
+			&i.Title,
+			&i.Message,
+			&i.ActionLabel,
+			&i.ActionTarget,
+			&i.Data,
+			&i.RelatedCategoryID,
+			&i.RelatedAccountID,
+			&i.RelatedGoalID,
+			&i.IsDismissed,
+			&i.DismissedAt,
+			&i.ValidFrom,
+			&i.ValidUntil,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listFinalInsightsByPeriod = `-- name: ListFinalInsightsByPeriod :many
 SELECT id, tracking_period_id, user_id, insight_type, calculation_phase, severity, title, message, action_label, action_target, data, related_category_id, related_account_id, related_goal_id, is_dismissed, dismissed_at, valid_from, valid_until, created_at, updated_at FROM tracking_period_insights
 WHERE tracking_period_id = $1

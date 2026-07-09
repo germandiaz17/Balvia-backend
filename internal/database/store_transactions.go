@@ -27,8 +27,15 @@ func (s *SQLStore) CreateTransactionTx(ctx context.Context, arg sqlc.CreateTrans
 		txn = t
 		return applyBalanceEffect(ctx, q, t, decimal.NewFromInt(1))
 	})
+	if err != nil {
+		return txn, err
+	}
 
-	return txn, err
+	// Refresh immediate during insights in a separate (non-blocking) transaction.
+	// Errors here are non-fatal: the transaction was already committed successfully.
+	_ = s.RefreshImmediateDuringInsights(ctx, txn.UserID, txn.TrackingPeriodID)
+
+	return txn, nil
 }
 
 // SoftDeleteTransactionTx implements Store.
@@ -47,8 +54,14 @@ func (s *SQLStore) SoftDeleteTransactionTx(ctx context.Context, id, userID uuid.
 		// Reverse the original balance effect (sign -1).
 		return applyBalanceEffect(ctx, q, t, decimal.NewFromInt(-1))
 	})
+	if err != nil {
+		return txn, err
+	}
 
-	return txn, err
+	// Refresh immediate during insights (non-fatal if it fails).
+	_ = s.RefreshImmediateDuringInsights(ctx, txn.UserID, txn.TrackingPeriodID)
+
+	return txn, nil
 }
 
 // UpdateTransactionTx implements Store. It reverses the previous balance
@@ -78,8 +91,14 @@ func (s *SQLStore) UpdateTransactionTx(ctx context.Context, arg sqlc.UpdateTrans
 
 		return applyBalanceEffect(ctx, q, nw, decimal.NewFromInt(1))
 	})
+	if err != nil {
+		return updated, err
+	}
 
-	return updated, err
+	// Refresh immediate during insights (non-fatal if it fails).
+	_ = s.RefreshImmediateDuringInsights(ctx, updated.UserID, updated.TrackingPeriodID)
+
+	return updated, nil
 }
 
 // applyBalanceEffect adjusts account balance(s) for a transaction, scaled by

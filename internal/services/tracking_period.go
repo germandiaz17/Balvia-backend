@@ -264,13 +264,28 @@ func (s *PeriodQueryService) buildSubPeriods(
 	return result, nil
 }
 
-// GetInsights returns the "final" (close-time) insights for the given period.
+// GetInsights returns insights for the given tracking period:
+//   - Active period: performs a lazy refresh of ALL "during" insights and
+//     returns the freshly computed set (spending_pace, budget_warning,
+//     budget_exceeded, ant_expenses_early, unusual_expense, vs_previous_partial,
+//     goal_progress_alert).
+//   - Closed period: returns the immutable "final" insights generated at close
+//     time (top_categories, top_merchants, …, goal_achievement_summary).
+//
 // Returns domain.ErrNotFound when the period does not belong to the user.
 func (s *PeriodQueryService) GetInsights(ctx context.Context, userID, periodID uuid.UUID) ([]sqlc.TrackingPeriodInsight, error) {
-	// Validate ownership first.
-	if _, err := s.Get(ctx, userID, periodID); err != nil {
+	// Validate ownership and obtain the period status.
+	period, err := s.Get(ctx, userID, periodID)
+	if err != nil {
 		return nil, err
 	}
+
+	if period.Status == "active" {
+		// Lazy-refresh: recalculate all "during" insights and return them.
+		return s.store.RefreshAllDuringInsights(ctx, periodID, userID)
+	}
+
+	// Closed period: return the immutable "final" insights.
 	return s.store.GetFinalInsights(ctx, periodID, userID)
 }
 

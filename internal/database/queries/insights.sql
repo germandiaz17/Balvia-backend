@@ -57,3 +57,32 @@ SELECT COUNT(*)::int AS count
 FROM tracking_period_insights
 WHERE tracking_period_id = $1
   AND calculation_phase = 'final';
+
+-- name: ListDuringInsightsByPeriod :many
+-- Returns only the "during" (in-progress) insights for an active period, newest first.
+SELECT * FROM tracking_period_insights
+WHERE tracking_period_id = sqlc.arg(tracking_period_id)
+  AND user_id = sqlc.arg(user_id)
+  AND calculation_phase = 'during'
+  AND is_dismissed = FALSE
+ORDER BY created_at DESC;
+
+-- name: DeleteDuringInsightsByPeriod :exec
+-- Deletes all "during" insights for a period. Used before regenerating them
+-- (replace strategy) and when closing the period (cleanup before final insights).
+DELETE FROM tracking_period_insights
+WHERE tracking_period_id = sqlc.arg(tracking_period_id)
+  AND user_id = sqlc.arg(user_id)
+  AND calculation_phase = 'during';
+
+-- name: DeleteImmediateDuringInsightsByPeriod :exec
+-- Deletes only the "immediate" during insights (those recalculated on every
+-- transaction mutation: spending_pace, budget_warning, budget_exceeded).
+-- The "lazy" during insights (ant_expenses_early, unusual_expense,
+-- vs_previous_partial, goal_progress_alert) are preserved until the next
+-- lazy refresh via GET /tracking-periods/:id/insights.
+DELETE FROM tracking_period_insights
+WHERE tracking_period_id = sqlc.arg(tracking_period_id)
+  AND user_id = sqlc.arg(user_id)
+  AND calculation_phase = 'during'
+  AND insight_type IN ('spending_pace', 'budget_warning', 'budget_exceeded');

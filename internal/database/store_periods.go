@@ -93,7 +93,18 @@ func (s *SQLStore) ClosePeriodTx(ctx context.Context, periodID, userID uuid.UUID
 		}
 		res.BudgetsCopied = len(budgets)
 
-		// ── 4. Generate final insights (idempotent) ───────────────────────
+		// ── 4. Clean up "during" insights before generating "final" ones ────
+		// "during" insights are ephemeral; once the period closes they become
+		// stale. Deleting them keeps the stored set coherent: the closed period
+		// will only ever return "final" insights from this point on.
+		if err := q.DeleteDuringInsightsByPeriod(ctx, sqlc.DeleteDuringInsightsByPeriodParams{
+			TrackingPeriodID: periodID,
+			UserID:           userID,
+		}); err != nil {
+			return fmt.Errorf("delete during insights on close: %w", err)
+		}
+
+		// ── 5. Generate final insights (idempotent) ───────────────────────
 		existingCount, err := q.CountFinalInsightsByPeriod(ctx, periodID)
 		if err != nil {
 			return fmt.Errorf("count final insights: %w", err)

@@ -42,6 +42,15 @@ type Querier interface {
 	CreateUser(ctx context.Context, arg CreateUserParams) (User, error)
 	CreateUserSettings(ctx context.Context, arg CreateUserSettingsParams) (UserSetting, error)
 	DeleteBudget(ctx context.Context, arg DeleteBudgetParams) (uuid.UUID, error)
+	// Deletes all "during" insights for a period. Used before regenerating them
+	// (replace strategy) and when closing the period (cleanup before final insights).
+	DeleteDuringInsightsByPeriod(ctx context.Context, arg DeleteDuringInsightsByPeriodParams) error
+	// Deletes only the "immediate" during insights (those recalculated on every
+	// transaction mutation: spending_pace, budget_warning, budget_exceeded).
+	// The "lazy" during insights (ant_expenses_early, unusual_expense,
+	// vs_previous_partial, goal_progress_alert) are preserved until the next
+	// lazy refresh via GET /tracking-periods/:id/insights.
+	DeleteImmediateDuringInsightsByPeriod(ctx context.Context, arg DeleteImmediateDuringInsightsByPeriodParams) error
 	ExpenseByAccount(ctx context.Context, trackingPeriodID uuid.UUID) ([]ExpenseByAccountRow, error)
 	// Groups expense transactions in the period by category. Returns category_id
 	// (nullable), category name (nullable — NULL when uncategorized), and total.
@@ -93,6 +102,8 @@ type Querier interface {
 	// on or before the given date. Used by the recurrence engine (scheduler +
 	// lazy trigger) to find templates that need materialization.
 	ListDueRecurringTransactions(ctx context.Context, dueBefore pgtype.Date) ([]RecurringTransaction, error)
+	// Returns only the "during" (in-progress) insights for an active period, newest first.
+	ListDuringInsightsByPeriod(ctx context.Context, arg ListDuringInsightsByPeriodParams) ([]TrackingPeriodInsight, error)
 	// Returns only the "final" (close-time) insights for a period.
 	ListFinalInsightsByPeriod(ctx context.Context, arg ListFinalInsightsByPeriodParams) ([]TrackingPeriodInsight, error)
 	// Returns all non-dismissed insights for a period, newest first.

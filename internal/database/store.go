@@ -54,6 +54,18 @@ type Store interface {
 	// GetFinalInsights returns the "final" (close-time) insights for a closed
 	// period. Returns an empty slice (not an error) when none exist yet.
 	GetFinalInsights(ctx context.Context, periodID, userID uuid.UUID) ([]sqlc.TrackingPeriodInsight, error)
+
+	// RefreshImmediateDuringInsights recalculates the three "immediate" during
+	// insights (spending_pace, budget_warning, budget_exceeded) for an active
+	// period, replacing them atomically. Called after every transaction mutation.
+	// No-op if the period is already closed.
+	RefreshImmediateDuringInsights(ctx context.Context, userID uuid.UUID, periodID uuid.UUID) error
+
+	// RefreshAllDuringInsights recalculates ALL seven "during" insights for an
+	// active period, replacing them atomically. Called lazily when the client
+	// requests GET /tracking-periods/:id/insights on the active period.
+	// Returns the fresh insight rows (empty when the period is closed).
+	RefreshAllDuringInsights(ctx context.Context, periodID, userID uuid.UUID) ([]sqlc.TrackingPeriodInsight, error)
 }
 
 // SQLStore is the pgx-backed implementation of Store.
