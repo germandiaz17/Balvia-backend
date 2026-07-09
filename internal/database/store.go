@@ -50,6 +50,10 @@ type Store interface {
 	// all atomically. It is idempotent: if a transaction for (templateID, date)
 	// already exists the call is a no-op (returns the existing transaction).
 	MaterialiseRecurringTx(ctx context.Context, arg MaterialiseRecurringParams) (sqlc.Transaction, error)
+
+	// GetFinalInsights returns the "final" (close-time) insights for a closed
+	// period. Returns an empty slice (not an error) when none exist yet.
+	GetFinalInsights(ctx context.Context, periodID, userID uuid.UUID) ([]sqlc.TrackingPeriodInsight, error)
 }
 
 // SQLStore is the pgx-backed implementation of Store.

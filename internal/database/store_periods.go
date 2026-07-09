@@ -2,6 +2,7 @@ package database
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 
@@ -20,13 +21,15 @@ type ClosePeriodResult struct {
 	Next          sqlc.TrackingPeriod
 	Summary       sqlc.TrackingPeriodSummary
 	BudgetsCopied int
+	Insights      []sqlc.TrackingPeriodInsight
 }
 
 // ClosePeriodTx implements Store. In a single transaction it:
 //  1. marks the period closed (only if currently active),
-//  2. snapshots a summary (core financial aggregates),
+//  2. snapshots a summary (core financial aggregates + JSONB breakdowns),
 //  3. generates the next contiguous period (start = closed end + 1 day),
-//  4. copies the closed period's budgets onto the new period.
+//  4. copies the closed period's budgets onto the new period,
+//  5. generates all 9 "final" insights (idempotent: skipped if already exist).
 func (s *SQLStore) ClosePeriodTx(ctx context.Context, periodID, userID uuid.UUID) (ClosePeriodResult, error) {
 	var res ClosePeriodResult
 
@@ -40,12 +43,14 @@ func (s *SQLStore) ClosePeriodTx(ctx context.Context, periodID, userID uuid.UUID
 		}
 		res.Closed = closed
 
+		// ── 1. Build summary ──────────────────────────────────────────────
 		summary, err := buildSummary(ctx, q, closed, userID)
 		if err != nil {
 			return err
 		}
 		res.Summary = summary
 
+		// ── 2. Generate next period ───────────────────────────────────────
 		settings, err := q.GetUserSettingsByUserID(ctx, userID)
 		if err != nil {
 			return fmt.Errorf("load settings: %w", err)
@@ -67,6 +72,7 @@ func (s *SQLStore) ClosePeriodTx(ctx context.Context, periodID, userID uuid.UUID
 		}
 		res.Next = next
 
+		// ── 3. Copy budgets ───────────────────────────────────────────────
 		budgets, err := q.ListBudgetsByPeriod(ctx, periodID)
 		if err != nil {
 			return fmt.Errorf("list budgets: %w", err)
@@ -87,13 +93,132 @@ func (s *SQLStore) ClosePeriodTx(ctx context.Context, periodID, userID uuid.UUID
 		}
 		res.BudgetsCopied = len(budgets)
 
+		// ── 4. Generate final insights (idempotent) ───────────────────────
+		existingCount, err := q.CountFinalInsightsByPeriod(ctx, periodID)
+		if err != nil {
+			return fmt.Errorf("count final insights: %w", err)
+		}
+		if existingCount > 0 {
+			// Insights already generated (e.g. retry after partial failure).
+			return nil
+		}
+
+		data, err := collectClosePeriodData(ctx, q, closed, userID, budgets)
+		if err != nil {
+			return err
+		}
+
+		drafts := generateFinalInsights(data)
+		for _, draft := range drafts {
+			insight, err := q.CreateTrackingPeriodInsight(ctx, sqlc.CreateTrackingPeriodInsightParams{
+				TrackingPeriodID:  periodID,
+				UserID:            userID,
+				InsightType:       draft.InsightType,
+				CalculationPhase:  draft.CalculationPhase,
+				Severity:          draft.Severity,
+				Title:             draft.Title,
+				Message:           draft.Message,
+				ActionLabel:       draft.ActionLabel,
+				ActionTarget:      draft.ActionTarget,
+				Data:              draft.Data,
+				RelatedCategoryID: draft.RelatedCategoryID,
+				RelatedAccountID:  draft.RelatedAccountID,
+				RelatedGoalID:     draft.RelatedGoalID,
+				ValidUntil:        draft.ValidUntil,
+			})
+			if err != nil {
+				return fmt.Errorf("create insight %s: %w", draft.InsightType, err)
+			}
+			res.Insights = append(res.Insights, insight)
+		}
+
 		return nil
 	})
 
 	return res, err
 }
 
-// buildSummary computes the core financial snapshot for a closed period.
+// collectClosePeriodData gathers all the data required by the insight
+// generators in a single pass within the existing transaction.
+func collectClosePeriodData(
+	ctx context.Context,
+	q *sqlc.Queries,
+	period sqlc.TrackingPeriod,
+	userID uuid.UUID,
+	budgets []sqlc.Budget,
+) (closePeriodData, error) {
+	data := closePeriodData{
+		Period:  period,
+		Budgets: budgets,
+	}
+
+	totals, err := q.SummarizePeriodTotals(ctx, period.ID)
+	if err != nil {
+		return data, fmt.Errorf("totals for insights: %w", err)
+	}
+	data.Totals = totals
+
+	expByCategory, err := q.ExpenseByCategory(ctx, period.ID)
+	if err != nil {
+		return data, fmt.Errorf("expense by category: %w", err)
+	}
+	data.ExpByCategory = expByCategory
+
+	incByCategory, err := q.IncomeByCategory(ctx, period.ID)
+	if err != nil {
+		return data, fmt.Errorf("income by category: %w", err)
+	}
+	data.IncByCategory = incByCategory
+
+	expByAccount, err := q.ExpenseByAccount(ctx, period.ID)
+	if err != nil {
+		return data, fmt.Errorf("expense by account: %w", err)
+	}
+	data.ExpByAccount = expByAccount
+
+	expByDay, err := q.ExpenseByDay(ctx, period.ID)
+	if err != nil {
+		return data, fmt.Errorf("expense by day: %w", err)
+	}
+	data.ExpByDay = expByDay
+
+	topMerchants, err := q.TopMerchants(ctx, period.ID)
+	if err != nil {
+		return data, fmt.Errorf("top merchants: %w", err)
+	}
+	data.TopMerchants = topMerchants
+
+	goalContribsTotal, err := q.GoalContributionsTotalForPeriod(ctx, period.ID)
+	if err != nil {
+		return data, fmt.Errorf("goal contributions total: %w", err)
+	}
+	data.GoalContribsTotal = goalContribsTotal
+
+	// Previous period summary (optional — used for vs_previous_final).
+	// pgx.ErrNoRows is expected for period #1 or when the previous period has
+	// no summary; in that case PrevSummary stays nil and the generator skips.
+	prevPeriod, err := q.GetPreviousTrackingPeriod(ctx, sqlc.GetPreviousTrackingPeriodParams{
+		UserID:         userID,
+		SequenceNumber: period.SequenceNumber,
+	})
+	switch {
+	case err == nil:
+		prevSummary, err := q.GetTrackingPeriodSummaryForPeriod(ctx, prevPeriod.ID)
+		switch {
+		case err == nil:
+			data.PrevSummary = &prevSummary
+		case !errors.Is(err, pgx.ErrNoRows):
+			return data, fmt.Errorf("previous period summary: %w", err)
+		}
+	case !errors.Is(err, pgx.ErrNoRows):
+		return data, fmt.Errorf("previous period: %w", err)
+	}
+
+	return data, nil
+}
+
+// buildSummary computes the core financial snapshot + JSONB breakdowns for a
+// closed period, creating (and immediately updating) the summary row.
 func buildSummary(ctx context.Context, q *sqlc.Queries, period sqlc.TrackingPeriod, userID uuid.UUID) (sqlc.TrackingPeriodSummary, error) {
 	totals, err := q.SummarizePeriodTotals(ctx, period.ID)
 	if err != nil {
@@ -117,7 +242,7 @@ func buildSummary(ctx context.Context, q *sqlc.Queries, period sqlc.TrackingPeri
 		return sqlc.TrackingPeriodSummary{}, fmt.Errorf("top expense category: %w", err)
 	}
 
-	return q.CreateTrackingPeriodSummary(ctx, sqlc.CreateTrackingPeriodSummaryParams{
+	summary, err := q.CreateTrackingPeriodSummary(ctx, sqlc.CreateTrackingPeriodSummaryParams{
 		TrackingPeriodID:         period.ID,
 		UserID:                   userID,
 		TotalIncome:              totals.TotalIncome,
@@ -130,5 +255,261 @@ func buildSummary(ctx context.Context, q *sqlc.Queries, period sqlc.TrackingPeri
 		IncomeTransactionCount:   totals.IncomeTransactionCount,
 		TopExpenseCategoryID:     topCatID,
 		TopExpenseCategoryAmount: topCatAmt,
+	})
+	if err != nil {
+		return sqlc.TrackingPeriodSummary{}, fmt.Errorf("create summary: %w", err)
+	}
+
+	// ── Compute JSONB breakdowns ──────────────────────────────────────────
+	// Errors must propagate: a failed query aborts the surrounding Postgres
+	// transaction, so continuing would only fail later with a confusing error.
+	expByCategory, err := q.ExpenseByCategory(ctx, period.ID)
+	if err != nil {
+		return sqlc.TrackingPeriodSummary{}, fmt.Errorf("expense by category: %w", err)
+	}
+	incByCategory, err := q.IncomeByCategory(ctx, period.ID)
+	if err != nil {
+		return sqlc.TrackingPeriodSummary{}, fmt.Errorf("income by category: %w", err)
+	}
+	expByAccount, err := q.ExpenseByAccount(ctx, period.ID)
+	if err != nil {
+		return sqlc.TrackingPeriodSummary{}, fmt.Errorf("expense by account: %w", err)
+	}
+	expByDay, err := q.ExpenseByDay(ctx, period.ID)
+	if err != nil {
+		return sqlc.TrackingPeriodSummary{}, fmt.Errorf("expense by day: %w", err)
+	}
+	goalContribsTotal, err := q.GoalContributionsTotalForPeriod(ctx, period.ID)
+	if err != nil {
+		return sqlc.TrackingPeriodSummary{}, fmt.Errorf("goal contributions total: %w", err)
+	}
+
+	// Budget performance breakdown
+	budgets, err := q.ListBudgetsByPeriod(ctx, period.ID)
+	if err != nil {
+		return sqlc.TrackingPeriodSummary{}, fmt.Errorf("list budgets: %w", err)
+	}
+	budgetPerformance := buildBudgetPerformance(expByCategory, budgets, totals.TotalExpenses)
+
+	// vs_previous_period comparison. pgx.ErrNoRows is expected for period #1
+	// (no previous period) and when the previous period has no summary yet.
+	var vsPreviousPeriod []byte
+	prevPeriod, err := q.GetPreviousTrackingPeriod(ctx, sqlc.GetPreviousTrackingPeriodParams{
+		UserID:         userID,
+		SequenceNumber: period.SequenceNumber,
+	})
+	switch {
+	case err == nil:
+		prevSummary, err := q.GetTrackingPeriodSummaryForPeriod(ctx, prevPeriod.ID)
+		switch {
+		case err == nil:
+			vsPreviousPeriod, _ = buildVsPreviousPeriod(totals, prevSummary)
+		case !errors.Is(err, pgx.ErrNoRows):
+			return sqlc.TrackingPeriodSummary{}, fmt.Errorf("previous period summary: %w", err)
+		}
+	case !errors.Is(err, pgx.ErrNoRows):
+		return sqlc.TrackingPeriodSummary{}, fmt.Errorf("previous period: %w", err)
+	}
+
+	// Serialize breakdowns to JSON
+	expByCategoryJSON, _ := marshalExpenseByCategory(expByCategory)
+	incByCategoryJSON, _ := marshalIncomeByCategory(incByCategory)
+	expByAccountJSON, _ := marshalExpenseByAccount(expByAccount)
+	expByDayJSON, _ := marshalExpenseByDay(expByDay)
+	budgetPerfJSON, _ := json.Marshal(budgetPerformance)
+
+	updated, err := q.UpdateTrackingPeriodSummaryBreakdowns(ctx, sqlc.UpdateTrackingPeriodSummaryBreakdownsParams{
+		ID:                     summary.ID,
+		ExpenseByCategory:      expByCategoryJSON,
+		IncomeByCategory:       incByCategoryJSON,
+		ExpenseByAccount:       expByAccountJSON,
+		ExpenseByDay:           expByDayJSON,
+		BudgetPerformance:      budgetPerfJSON,
+		GoalContributionsTotal: goalContribsTotal,
+		VsPreviousPeriod:       vsPreviousPeriod,
+	})
+	if err != nil {
+		return sqlc.TrackingPeriodSummary{}, fmt.Errorf("update summary breakdowns: %w", err)
+	}
+
+	return updated, nil
+}
+
+// ── JSON marshalling helpers ──────────────────────────────────────────────────
+
+type expByCategoryEntry struct {
+	CategoryID   *string `json:"category_id"`
+	CategoryName *string `json:"category_name"`
+	Total        string  `json:"total"`
+	TxnCount     int32   `json:"txn_count"`
+}
+
+func marshalExpenseByCategory(rows []sqlc.ExpenseByCategoryRow) ([]byte, error) {
+	entries := make([]expByCategoryEntry, 0, len(rows))
+	for _, row := range rows {
+		var catID *string
+		if row.CategoryID.Valid {
+			s := row.CategoryID.UUID.String()
+			catID = &s
+		}
+		entries = append(entries, expByCategoryEntry{
+			CategoryID:   catID,
+			CategoryName: row.CategoryName,
+			Total:        row.Total.String(),
+			TxnCount:     row.TxnCount,
+		})
+	}
+	return json.Marshal(entries)
+}
+
+type incByCategoryEntry struct {
+	CategoryID   *string `json:"category_id"`
+	CategoryName *string `json:"category_name"`
+	Total        string  `json:"total"`
+	TxnCount     int32   `json:"txn_count"`
+}
+
+func marshalIncomeByCategory(rows []sqlc.IncomeByCategoryRow) ([]byte, error) {
+	entries := make([]incByCategoryEntry, 0, len(rows))
+	for _, row := range rows {
+		var catID *string
+		if row.CategoryID.Valid {
+			s := row.CategoryID.UUID.String()
+			catID = &s
+		}
+		entries = append(entries, incByCategoryEntry{
+			CategoryID:   catID,
+			CategoryName: row.CategoryName,
+			Total:        row.Total.String(),
+			TxnCount:     row.TxnCount,
+		})
+	}
+	return json.Marshal(entries)
+}
+
+type expByAccountEntry struct {
+	AccountID   string `json:"account_id"`
+	AccountName string `json:"account_name"`
+	Total       string `json:"total"`
+	TxnCount    int32  `json:"txn_count"`
+}
+
+func marshalExpenseByAccount(rows []sqlc.ExpenseByAccountRow) ([]byte, error) {
+	entries := make([]expByAccountEntry, 0, len(rows))
+	for _, row := range rows {
+		entries = append(entries, expByAccountEntry{
+			AccountID:   row.AccountID.String(),
+			AccountName: row.AccountName,
+			Total:       row.Total.String(),
+			TxnCount:    row.TxnCount,
+		})
+	}
+	return json.Marshal(entries)
+}
+
+type expByDayEntry struct {
+	Date     string `json:"date"`
+	Total    string `json:"total"`
+	TxnCount int32  `json:"txn_count"`
+}
+
+func marshalExpenseByDay(rows []sqlc.ExpenseByDayRow) ([]byte, error) {
+	entries := make([]expByDayEntry, 0, len(rows))
+	for _, row := range rows {
+		entries = append(entries, expByDayEntry{
+			Date:     row.TransactionDate.Time.Format("2006-01-02"),
+			Total:    row.Total.String(),
+			TxnCount: row.TxnCount,
+		})
+	}
+	return json.Marshal(entries)
+}
+
+type budgetPerfEntry struct {
+	BudgetID      string  `json:"budget_id"`
+	CategoryID    *string `json:"category_id"`
+	BudgetAmount  string  `json:"budget_amount"`
+	SpentAmount   string  `json:"spent_amount"`
+	CompliancePct string  `json:"compliance_pct"`
+	Exceeded      bool    `json:"exceeded"`
+}
+
+func buildBudgetPerformance(
+	expByCategory []sqlc.ExpenseByCategoryRow,
+	budgets []sqlc.Budget,
+	totalExpenses decimal.Decimal,
+) []budgetPerfEntry {
+	// build category→spend lookup
+	catSpend := make(map[uuid.UUID]decimal.Decimal)
+	for _, row := range expByCategory {
+		if row.CategoryID.Valid {
+			catSpend[row.CategoryID.UUID] = row.Total
+		}
+	}
+
+	entries := make([]budgetPerfEntry, 0, len(budgets))
+	for _, b := range budgets {
+		var spent decimal.Decimal
+		if b.CategoryID.Valid {
+			spent = catSpend[b.CategoryID.UUID]
+		} else {
+			spent = totalExpenses
+		}
+		compliancePct := decimal.Zero
+		if b.Amount.IsPositive() {
+			compliancePct = spent.Div(b.Amount).Mul(decimal.NewFromInt(100)).Round(1)
+		}
+		var catIDStr *string
+		if b.CategoryID.Valid {
+			s := b.CategoryID.UUID.String()
+			catIDStr = &s
+		}
+		entries = append(entries, budgetPerfEntry{
+			BudgetID:      b.ID.String(),
+			CategoryID:    catIDStr,
+			BudgetAmount:  b.Amount.String(),
+			SpentAmount:   spent.String(),
+			CompliancePct: compliancePct.String(),
+			Exceeded:      spent.GreaterThan(b.Amount),
+		})
+	}
+	return entries
+}
+
+type vsPreviousEntry struct {
+	CurrentIncome      string `json:"current_income"`
+	CurrentExpenses    string `json:"current_expenses"`
+	CurrentNetSavings  string `json:"current_net_savings"`
+	PreviousIncome     string `json:"previous_income"`
+	PreviousExpenses   string `json:"previous_expenses"`
+	PreviousNetSavings string `json:"previous_net_savings"`
+	DeltaExpenses      string `json:"delta_expenses"`
+	DeltaIncome        string `json:"delta_income"`
+	ExpenseChangePct   string `json:"expense_change_pct"`
+	PreviousPeriodID   string `json:"previous_period_id"`
+}
+
+func buildVsPreviousPeriod(totals sqlc.SummarizePeriodTotalsRow, prev sqlc.TrackingPeriodSummary) ([]byte, error) {
+	currentNet := totals.TotalIncome.Sub(totals.TotalExpenses)
+	prevNet := prev.TotalIncome.Sub(prev.TotalExpenses)
+	deltaExpenses := totals.TotalExpenses.Sub(prev.TotalExpenses)
+	deltaIncome := totals.TotalIncome.Sub(prev.TotalIncome)
+
+	expenseChangePct := decimal.Zero
+	if prev.TotalExpenses.IsPositive() {
+		expenseChangePct = deltaExpenses.Div(prev.TotalExpenses).Mul(decimal.NewFromInt(100)).Round(1)
+	}
+
+	return json.Marshal(vsPreviousEntry{
+		CurrentIncome:      totals.TotalIncome.String(),
+		CurrentExpenses:    totals.TotalExpenses.String(),
+		CurrentNetSavings:  currentNet.String(),
+		PreviousIncome:     prev.TotalIncome.String(),
+		PreviousExpenses:   prev.TotalExpenses.String(),
+		PreviousNetSavings: prevNet.String(),
+		DeltaExpenses:      deltaExpenses.String(),
+		DeltaIncome:        deltaIncome.String(),
+		ExpenseChangePct:   expenseChangePct.String(),
+		PreviousPeriodID:   prev.TrackingPeriodID.String(),
 	})
 }

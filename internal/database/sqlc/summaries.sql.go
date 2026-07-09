@@ -93,6 +93,174 @@ func (q *Queries) CreateTrackingPeriodSummary(ctx context.Context, arg CreateTra
 	return i, err
 }
 
+const expenseByAccount = `-- name: ExpenseByAccount :many
+SELECT
+    t.account_id,
+    a.name  AS account_name,
+    SUM(t.amount)::numeric AS total,
+    COUNT(*)::int          AS txn_count
+FROM transactions t
+JOIN accounts a ON a.id = t.account_id
+WHERE t.tracking_period_id = $1
+  AND t.transaction_type = 'expense'
+  AND t.deleted_at IS NULL
+GROUP BY t.account_id, a.name
+ORDER BY total DESC
+`
+
+type ExpenseByAccountRow struct {
+	AccountID   uuid.UUID       `json:"account_id"`
+	AccountName string          `json:"account_name"`
+	Total       decimal.Decimal `json:"total"`
+	TxnCount    int32           `json:"txn_count"`
+}
+
+func (q *Queries) ExpenseByAccount(ctx context.Context, trackingPeriodID uuid.UUID) ([]ExpenseByAccountRow, error) {
+	rows, err := q.db.Query(ctx, expenseByAccount, trackingPeriodID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ExpenseByAccountRow{}
+	for rows.Next() {
+		var i ExpenseByAccountRow
+		if err := rows.Scan(
+			&i.AccountID,
+			&i.AccountName,
+			&i.Total,
+			&i.TxnCount,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const expenseByCategory = `-- name: ExpenseByCategory :many
+SELECT
+    t.category_id,
+    c.name  AS category_name,
+    SUM(t.amount)::numeric AS total,
+    COUNT(*)::int          AS txn_count
+FROM transactions t
+LEFT JOIN categories c ON c.id = t.category_id
+WHERE t.tracking_period_id = $1
+  AND t.transaction_type = 'expense'
+  AND t.deleted_at IS NULL
+GROUP BY t.category_id, c.name
+ORDER BY total DESC
+`
+
+type ExpenseByCategoryRow struct {
+	CategoryID   uuid.NullUUID   `json:"category_id"`
+	CategoryName *string         `json:"category_name"`
+	Total        decimal.Decimal `json:"total"`
+	TxnCount     int32           `json:"txn_count"`
+}
+
+// Groups expense transactions in the period by category. Returns category_id
+// (nullable), category name (nullable — NULL when uncategorized), and total.
+func (q *Queries) ExpenseByCategory(ctx context.Context, trackingPeriodID uuid.UUID) ([]ExpenseByCategoryRow, error) {
+	rows, err := q.db.Query(ctx, expenseByCategory, trackingPeriodID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ExpenseByCategoryRow{}
+	for rows.Next() {
+		var i ExpenseByCategoryRow
+		if err := rows.Scan(
+			&i.CategoryID,
+			&i.CategoryName,
+			&i.Total,
+			&i.TxnCount,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const expenseByDay = `-- name: ExpenseByDay :many
+SELECT
+    transaction_date,
+    SUM(amount)::numeric AS total,
+    COUNT(*)::int        AS txn_count
+FROM transactions
+WHERE tracking_period_id = $1
+  AND transaction_type = 'expense'
+  AND deleted_at IS NULL
+GROUP BY transaction_date
+ORDER BY transaction_date
+`
+
+type ExpenseByDayRow struct {
+	TransactionDate pgtype.Date     `json:"transaction_date"`
+	Total           decimal.Decimal `json:"total"`
+	TxnCount        int32           `json:"txn_count"`
+}
+
+// Daily expense totals for the period, ordered chronologically.
+func (q *Queries) ExpenseByDay(ctx context.Context, trackingPeriodID uuid.UUID) ([]ExpenseByDayRow, error) {
+	rows, err := q.db.Query(ctx, expenseByDay, trackingPeriodID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ExpenseByDayRow{}
+	for rows.Next() {
+		var i ExpenseByDayRow
+		if err := rows.Scan(&i.TransactionDate, &i.Total, &i.TxnCount); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const getPreviousTrackingPeriod = `-- name: GetPreviousTrackingPeriod :one
+SELECT id, user_id, start_date, end_date, status, sequence_number, config_start_day, config_duration_days, closed_at, created_at, updated_at FROM tracking_periods
+WHERE user_id = $1
+  AND sequence_number = $2 - 1
+  AND status = 'closed'
+`
+
+type GetPreviousTrackingPeriodParams struct {
+	UserID         uuid.UUID   `json:"user_id"`
+	SequenceNumber interface{} `json:"sequence_number"`
+}
+
+// Returns the immediately preceding closed period for the same user.
+func (q *Queries) GetPreviousTrackingPeriod(ctx context.Context, arg GetPreviousTrackingPeriodParams) (TrackingPeriod, error) {
+	row := q.db.QueryRow(ctx, getPreviousTrackingPeriod, arg.UserID, arg.SequenceNumber)
+	var i TrackingPeriod
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.StartDate,
+		&i.EndDate,
+		&i.Status,
+		&i.SequenceNumber,
+		&i.ConfigStartDay,
+		&i.ConfigDurationDays,
+		&i.ClosedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const getTopExpenseCategory = `-- name: GetTopExpenseCategory :one
 SELECT category_id, SUM(amount)::numeric AS total
 FROM transactions
@@ -115,6 +283,136 @@ func (q *Queries) GetTopExpenseCategory(ctx context.Context, trackingPeriodID uu
 	var i GetTopExpenseCategoryRow
 	err := row.Scan(&i.CategoryID, &i.Total)
 	return i, err
+}
+
+const getTrackingPeriodSummary = `-- name: GetTrackingPeriodSummary :one
+SELECT id, tracking_period_id, user_id, total_income, total_expenses, total_transfers, net_savings, savings_rate, transaction_count, expense_transaction_count, income_transaction_count, top_expense_category_id, top_expense_category_amount, expense_by_category, income_by_category, expense_by_account, expense_by_day, budget_performance, goal_contributions_total, vs_previous_period, calculated_at FROM tracking_period_summaries
+WHERE tracking_period_id = $1
+`
+
+func (q *Queries) GetTrackingPeriodSummary(ctx context.Context, trackingPeriodID uuid.UUID) (TrackingPeriodSummary, error) {
+	row := q.db.QueryRow(ctx, getTrackingPeriodSummary, trackingPeriodID)
+	var i TrackingPeriodSummary
+	err := row.Scan(
+		&i.ID,
+		&i.TrackingPeriodID,
+		&i.UserID,
+		&i.TotalIncome,
+		&i.TotalExpenses,
+		&i.TotalTransfers,
+		&i.NetSavings,
+		&i.SavingsRate,
+		&i.TransactionCount,
+		&i.ExpenseTransactionCount,
+		&i.IncomeTransactionCount,
+		&i.TopExpenseCategoryID,
+		&i.TopExpenseCategoryAmount,
+		&i.ExpenseByCategory,
+		&i.IncomeByCategory,
+		&i.ExpenseByAccount,
+		&i.ExpenseByDay,
+		&i.BudgetPerformance,
+		&i.GoalContributionsTotal,
+		&i.VsPreviousPeriod,
+		&i.CalculatedAt,
+	)
+	return i, err
+}
+
+const getTrackingPeriodSummaryForPeriod = `-- name: GetTrackingPeriodSummaryForPeriod :one
+SELECT id, tracking_period_id, user_id, total_income, total_expenses, total_transfers, net_savings, savings_rate, transaction_count, expense_transaction_count, income_transaction_count, top_expense_category_id, top_expense_category_amount, expense_by_category, income_by_category, expense_by_account, expense_by_day, budget_performance, goal_contributions_total, vs_previous_period, calculated_at FROM tracking_period_summaries
+WHERE tracking_period_id = $1
+`
+
+// Returns the snapshot summary for a closed period (used for vs_previous).
+func (q *Queries) GetTrackingPeriodSummaryForPeriod(ctx context.Context, trackingPeriodID uuid.UUID) (TrackingPeriodSummary, error) {
+	row := q.db.QueryRow(ctx, getTrackingPeriodSummaryForPeriod, trackingPeriodID)
+	var i TrackingPeriodSummary
+	err := row.Scan(
+		&i.ID,
+		&i.TrackingPeriodID,
+		&i.UserID,
+		&i.TotalIncome,
+		&i.TotalExpenses,
+		&i.TotalTransfers,
+		&i.NetSavings,
+		&i.SavingsRate,
+		&i.TransactionCount,
+		&i.ExpenseTransactionCount,
+		&i.IncomeTransactionCount,
+		&i.TopExpenseCategoryID,
+		&i.TopExpenseCategoryAmount,
+		&i.ExpenseByCategory,
+		&i.IncomeByCategory,
+		&i.ExpenseByAccount,
+		&i.ExpenseByDay,
+		&i.BudgetPerformance,
+		&i.GoalContributionsTotal,
+		&i.VsPreviousPeriod,
+		&i.CalculatedAt,
+	)
+	return i, err
+}
+
+const goalContributionsTotalForPeriod = `-- name: GoalContributionsTotalForPeriod :one
+SELECT COALESCE(SUM(amount), 0)::numeric AS total
+FROM savings_goal_contributions
+WHERE tracking_period_id = $1
+`
+
+// Total savings goal contributions that were recorded within a tracking period.
+func (q *Queries) GoalContributionsTotalForPeriod(ctx context.Context, trackingPeriodID uuid.UUID) (decimal.Decimal, error) {
+	row := q.db.QueryRow(ctx, goalContributionsTotalForPeriod, trackingPeriodID)
+	var total decimal.Decimal
+	err := row.Scan(&total)
+	return total, err
+}
+
+const incomeByCategory = `-- name: IncomeByCategory :many
+SELECT
+    t.category_id,
+    c.name  AS category_name,
+    SUM(t.amount)::numeric AS total,
+    COUNT(*)::int          AS txn_count
+FROM transactions t
+LEFT JOIN categories c ON c.id = t.category_id
+WHERE t.tracking_period_id = $1
+  AND t.transaction_type = 'income'
+  AND t.deleted_at IS NULL
+GROUP BY t.category_id, c.name
+ORDER BY total DESC
+`
+
+type IncomeByCategoryRow struct {
+	CategoryID   uuid.NullUUID   `json:"category_id"`
+	CategoryName *string         `json:"category_name"`
+	Total        decimal.Decimal `json:"total"`
+	TxnCount     int32           `json:"txn_count"`
+}
+
+func (q *Queries) IncomeByCategory(ctx context.Context, trackingPeriodID uuid.UUID) ([]IncomeByCategoryRow, error) {
+	rows, err := q.db.Query(ctx, incomeByCategory, trackingPeriodID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []IncomeByCategoryRow{}
+	for rows.Next() {
+		var i IncomeByCategoryRow
+		if err := rows.Scan(
+			&i.CategoryID,
+			&i.CategoryName,
+			&i.Total,
+			&i.TxnCount,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const summarizePeriodTotals = `-- name: SummarizePeriodTotals :one
@@ -193,6 +491,116 @@ func (q *Queries) SummarizePeriodTotalsInRange(ctx context.Context, arg Summariz
 		&i.TransactionCount,
 		&i.ExpenseTransactionCount,
 		&i.IncomeTransactionCount,
+	)
+	return i, err
+}
+
+const topMerchants = `-- name: TopMerchants :many
+SELECT
+    description,
+    SUM(amount)::numeric AS total,
+    COUNT(*)::int        AS txn_count
+FROM transactions
+WHERE tracking_period_id = $1
+  AND transaction_type = 'expense'
+  AND deleted_at IS NULL
+  AND description IS NOT NULL
+  AND description != ''
+GROUP BY description
+ORDER BY total DESC
+LIMIT 10
+`
+
+type TopMerchantsRow struct {
+	Description *string         `json:"description"`
+	Total       decimal.Decimal `json:"total"`
+	TxnCount    int32           `json:"txn_count"`
+}
+
+// Returns the top description values by total expense amount.
+// Only rows with a non-empty description are included so purely note-based
+// transactions do not pollute the merchant list.
+func (q *Queries) TopMerchants(ctx context.Context, trackingPeriodID uuid.UUID) ([]TopMerchantsRow, error) {
+	rows, err := q.db.Query(ctx, topMerchants, trackingPeriodID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []TopMerchantsRow{}
+	for rows.Next() {
+		var i TopMerchantsRow
+		if err := rows.Scan(&i.Description, &i.Total, &i.TxnCount); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const updateTrackingPeriodSummaryBreakdowns = `-- name: UpdateTrackingPeriodSummaryBreakdowns :one
+UPDATE tracking_period_summaries
+SET expense_by_category      = $1,
+    income_by_category       = $2,
+    expense_by_account       = $3,
+    expense_by_day           = $4,
+    budget_performance       = $5,
+    goal_contributions_total = $6,
+    vs_previous_period       = $7
+WHERE id = $8
+RETURNING id, tracking_period_id, user_id, total_income, total_expenses, total_transfers, net_savings, savings_rate, transaction_count, expense_transaction_count, income_transaction_count, top_expense_category_id, top_expense_category_amount, expense_by_category, income_by_category, expense_by_account, expense_by_day, budget_performance, goal_contributions_total, vs_previous_period, calculated_at
+`
+
+type UpdateTrackingPeriodSummaryBreakdownsParams struct {
+	ExpenseByCategory      []byte          `json:"expense_by_category"`
+	IncomeByCategory       []byte          `json:"income_by_category"`
+	ExpenseByAccount       []byte          `json:"expense_by_account"`
+	ExpenseByDay           []byte          `json:"expense_by_day"`
+	BudgetPerformance      []byte          `json:"budget_performance"`
+	GoalContributionsTotal decimal.Decimal `json:"goal_contributions_total"`
+	VsPreviousPeriod       []byte          `json:"vs_previous_period"`
+	ID                     uuid.UUID       `json:"id"`
+}
+
+// Populates the JSONB breakdown columns on an existing summary row. Called
+// after the row is created so we can compute breakdowns in Go and set them
+// in a second step without reopening the creation transaction.
+func (q *Queries) UpdateTrackingPeriodSummaryBreakdowns(ctx context.Context, arg UpdateTrackingPeriodSummaryBreakdownsParams) (TrackingPeriodSummary, error) {
+	row := q.db.QueryRow(ctx, updateTrackingPeriodSummaryBreakdowns,
+		arg.ExpenseByCategory,
+		arg.IncomeByCategory,
+		arg.ExpenseByAccount,
+		arg.ExpenseByDay,
+		arg.BudgetPerformance,
+		arg.GoalContributionsTotal,
+		arg.VsPreviousPeriod,
+		arg.ID,
+	)
+	var i TrackingPeriodSummary
+	err := row.Scan(
+		&i.ID,
+		&i.TrackingPeriodID,
+		&i.UserID,
+		&i.TotalIncome,
+		&i.TotalExpenses,
+		&i.TotalTransfers,
+		&i.NetSavings,
+		&i.SavingsRate,
+		&i.TransactionCount,
+		&i.ExpenseTransactionCount,
+		&i.IncomeTransactionCount,
+		&i.TopExpenseCategoryID,
+		&i.TopExpenseCategoryAmount,
+		&i.ExpenseByCategory,
+		&i.IncomeByCategory,
+		&i.ExpenseByAccount,
+		&i.ExpenseByDay,
+		&i.BudgetPerformance,
+		&i.GoalContributionsTotal,
+		&i.VsPreviousPeriod,
+		&i.CalculatedAt,
 	)
 	return i, err
 }

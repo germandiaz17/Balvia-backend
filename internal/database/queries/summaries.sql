@@ -56,3 +56,115 @@ INSERT INTO tracking_period_summaries (
     sqlc.narg(top_expense_category_amount)
 )
 RETURNING *;
+
+-- name: UpdateTrackingPeriodSummaryBreakdowns :one
+-- Populates the JSONB breakdown columns on an existing summary row. Called
+-- after the row is created so we can compute breakdowns in Go and set them
+-- in a second step without reopening the creation transaction.
+UPDATE tracking_period_summaries
+SET expense_by_category      = sqlc.arg(expense_by_category),
+    income_by_category       = sqlc.arg(income_by_category),
+    expense_by_account       = sqlc.arg(expense_by_account),
+    expense_by_day           = sqlc.arg(expense_by_day),
+    budget_performance       = sqlc.arg(budget_performance),
+    goal_contributions_total = sqlc.arg(goal_contributions_total),
+    vs_previous_period       = sqlc.arg(vs_previous_period)
+WHERE id = sqlc.arg(id)
+RETURNING *;
+
+-- name: GetTrackingPeriodSummary :one
+SELECT * FROM tracking_period_summaries
+WHERE tracking_period_id = sqlc.arg(tracking_period_id);
+
+-- name: ExpenseByCategory :many
+-- Groups expense transactions in the period by category. Returns category_id
+-- (nullable), category name (nullable — NULL when uncategorized), and total.
+SELECT
+    t.category_id,
+    c.name  AS category_name,
+    SUM(t.amount)::numeric AS total,
+    COUNT(*)::int          AS txn_count
+FROM transactions t
+LEFT JOIN categories c ON c.id = t.category_id
+WHERE t.tracking_period_id = $1
+  AND t.transaction_type = 'expense'
+  AND t.deleted_at IS NULL
+GROUP BY t.category_id, c.name
+ORDER BY total DESC;
+
+-- name: IncomeByCategory :many
+SELECT
+    t.category_id,
+    c.name  AS category_name,
+    SUM(t.amount)::numeric AS total,
+    COUNT(*)::int          AS txn_count
+FROM transactions t
+LEFT JOIN categories c ON c.id = t.category_id
+WHERE t.tracking_period_id = $1
+  AND t.transaction_type = 'income'
+  AND t.deleted_at IS NULL
+GROUP BY t.category_id, c.name
+ORDER BY total DESC;
+
+-- name: ExpenseByAccount :many
+SELECT
+    t.account_id,
+    a.name  AS account_name,
+    SUM(t.amount)::numeric AS total,
+    COUNT(*)::int          AS txn_count
+FROM transactions t
+JOIN accounts a ON a.id = t.account_id
+WHERE t.tracking_period_id = $1
+  AND t.transaction_type = 'expense'
+  AND t.deleted_at IS NULL
+GROUP BY t.account_id, a.name
+ORDER BY total DESC;
+
+-- name: ExpenseByDay :many
+-- Daily expense totals for the period, ordered chronologically.
+SELECT
+    transaction_date,
+    SUM(amount)::numeric AS total,
+    COUNT(*)::int        AS txn_count
+FROM transactions
+WHERE tracking_period_id = $1
+  AND transaction_type = 'expense'
+  AND deleted_at IS NULL
+GROUP BY transaction_date
+ORDER BY transaction_date;
+
+-- name: TopMerchants :many
+-- Returns the top description values by total expense amount.
+-- Only rows with a non-empty description are included so purely note-based
+-- transactions do not pollute the merchant list.
+SELECT
+    description,
+    SUM(amount)::numeric AS total,
+    COUNT(*)::int        AS txn_count
+FROM transactions
+WHERE tracking_period_id = $1
+  AND transaction_type = 'expense'
+  AND deleted_at IS NULL
+  AND description IS NOT NULL
+  AND description != ''
+GROUP BY description
+ORDER BY total DESC
+LIMIT 10;
+
+-- name: GoalContributionsTotalForPeriod :one
+-- Total savings goal contributions that were recorded within a tracking period.
+SELECT COALESCE(SUM(amount), 0)::numeric AS total
+FROM savings_goal_contributions
+WHERE tracking_period_id = $1;
+
+-- name: GetPreviousTrackingPeriod :one
+-- Returns the immediately preceding closed period for the same user.
+SELECT * FROM tracking_periods
+WHERE user_id = sqlc.arg(user_id)
+  AND sequence_number = sqlc.arg(sequence_number) - 1
+  AND status = 'closed';
+
+-- name: GetTrackingPeriodSummaryForPeriod :one
+-- Returns the snapshot summary for a closed period (used for vs_previous).
+SELECT * FROM tracking_period_summaries
+WHERE tracking_period_id = sqlc.arg(tracking_period_id);

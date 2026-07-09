@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/shopspring/decimal"
 )
 
 type Querier interface {
@@ -25,6 +26,8 @@ type Querier interface {
 	// current_amount + $amount correctly computes the post-update total.
 	ApplyGoalContribution(ctx context.Context, arg ApplyGoalContributionParams) (SavingsGoal, error)
 	ClosePeriod(ctx context.Context, id uuid.UUID) (TrackingPeriod, error)
+	// Used to detect whether final insights were already generated (idempotency).
+	CountFinalInsightsByPeriod(ctx context.Context, trackingPeriodID uuid.UUID) (int32, error)
 	CreateAccount(ctx context.Context, arg CreateAccountParams) (Account, error)
 	CreateBudget(ctx context.Context, arg CreateBudgetParams) (Budget, error)
 	CreateCategory(ctx context.Context, arg CreateCategoryParams) (Category, error)
@@ -33,11 +36,18 @@ type Querier interface {
 	CreateSavingsGoal(ctx context.Context, arg CreateSavingsGoalParams) (SavingsGoal, error)
 	CreateSavingsGoalContribution(ctx context.Context, arg CreateSavingsGoalContributionParams) (SavingsGoalContribution, error)
 	CreateTrackingPeriod(ctx context.Context, arg CreateTrackingPeriodParams) (TrackingPeriod, error)
+	CreateTrackingPeriodInsight(ctx context.Context, arg CreateTrackingPeriodInsightParams) (TrackingPeriodInsight, error)
 	CreateTrackingPeriodSummary(ctx context.Context, arg CreateTrackingPeriodSummaryParams) (TrackingPeriodSummary, error)
 	CreateTransaction(ctx context.Context, arg CreateTransactionParams) (Transaction, error)
 	CreateUser(ctx context.Context, arg CreateUserParams) (User, error)
 	CreateUserSettings(ctx context.Context, arg CreateUserSettingsParams) (UserSetting, error)
 	DeleteBudget(ctx context.Context, arg DeleteBudgetParams) (uuid.UUID, error)
+	ExpenseByAccount(ctx context.Context, trackingPeriodID uuid.UUID) ([]ExpenseByAccountRow, error)
+	// Groups expense transactions in the period by category. Returns category_id
+	// (nullable), category name (nullable — NULL when uncategorized), and total.
+	ExpenseByCategory(ctx context.Context, trackingPeriodID uuid.UUID) ([]ExpenseByCategoryRow, error)
+	// Daily expense totals for the period, ordered chronologically.
+	ExpenseByDay(ctx context.Context, trackingPeriodID uuid.UUID) ([]ExpenseByDayRow, error)
 	GetAccount(ctx context.Context, arg GetAccountParams) (Account, error)
 	GetActiveTrackingPeriod(ctx context.Context, userID uuid.UUID) (TrackingPeriod, error)
 	GetBudget(ctx context.Context, arg GetBudgetParams) (Budget, error)
@@ -45,6 +55,8 @@ type Querier interface {
 	GetCategoryForUser(ctx context.Context, arg GetCategoryForUserParams) (Category, error)
 	// Only the user's own (non-system) category; used for update/delete.
 	GetOwnedCategory(ctx context.Context, arg GetOwnedCategoryParams) (Category, error)
+	// Returns the immediately preceding closed period for the same user.
+	GetPreviousTrackingPeriod(ctx context.Context, arg GetPreviousTrackingPeriodParams) (TrackingPeriod, error)
 	GetRecurringTransaction(ctx context.Context, arg GetRecurringTransactionParams) (RecurringTransaction, error)
 	// Returns a usable (not revoked, not expired) refresh token by its hash.
 	GetRefreshToken(ctx context.Context, tokenHash string) (RefreshToken, error)
@@ -53,15 +65,21 @@ type Querier interface {
 	GetTrackingPeriodByID(ctx context.Context, id uuid.UUID) (TrackingPeriod, error)
 	// Like GetTrackingPeriodByID but scoped to the owner — safe to expose directly.
 	GetTrackingPeriodForUser(ctx context.Context, arg GetTrackingPeriodForUserParams) (TrackingPeriod, error)
+	GetTrackingPeriodSummary(ctx context.Context, trackingPeriodID uuid.UUID) (TrackingPeriodSummary, error)
+	// Returns the snapshot summary for a closed period (used for vs_previous).
+	GetTrackingPeriodSummaryForPeriod(ctx context.Context, trackingPeriodID uuid.UUID) (TrackingPeriodSummary, error)
 	GetTransaction(ctx context.Context, arg GetTransactionParams) (Transaction, error)
 	GetUserByEmail(ctx context.Context, email string) (User, error)
 	GetUserByID(ctx context.Context, id uuid.UUID) (User, error)
 	GetUserSettingsByUserID(ctx context.Context, userID uuid.UUID) (UserSetting, error)
+	// Total savings goal contributions that were recorded within a tracking period.
+	GoalContributionsTotalForPeriod(ctx context.Context, trackingPeriodID uuid.UUID) (decimal.Decimal, error)
 	// Idempotency guard: returns TRUE if a non-deleted transaction already exists
 	// for this (template, occurrence_date) pair, avoiding duplicate generation
 	// on re-runs. We use occurrence_date (the original scheduled date) rather
 	// than transaction_date (which may be clamped to the period bounds).
 	HasRecurringTransactionForDate(ctx context.Context, arg HasRecurringTransactionForDateParams) (bool, error)
+	IncomeByCategory(ctx context.Context, trackingPeriodID uuid.UUID) ([]IncomeByCategoryRow, error)
 	ListAccounts(ctx context.Context, userID uuid.UUID) ([]Account, error)
 	// Internal: used when copying budgets onto a freshly generated period.
 	ListBudgetsByPeriod(ctx context.Context, trackingPeriodID uuid.UUID) ([]Budget, error)
@@ -75,6 +93,10 @@ type Querier interface {
 	// on or before the given date. Used by the recurrence engine (scheduler +
 	// lazy trigger) to find templates that need materialization.
 	ListDueRecurringTransactions(ctx context.Context, dueBefore pgtype.Date) ([]RecurringTransaction, error)
+	// Returns only the "final" (close-time) insights for a period.
+	ListFinalInsightsByPeriod(ctx context.Context, arg ListFinalInsightsByPeriodParams) ([]TrackingPeriodInsight, error)
+	// Returns all non-dismissed insights for a period, newest first.
+	ListInsightsByPeriod(ctx context.Context, arg ListInsightsByPeriodParams) ([]TrackingPeriodInsight, error)
 	ListRecurringTransactionsForUser(ctx context.Context, userID uuid.UUID) ([]RecurringTransaction, error)
 	ListSavingsGoalsForUser(ctx context.Context, userID uuid.UUID) ([]SavingsGoal, error)
 	ListSystemCategories(ctx context.Context) ([]Category, error)
@@ -91,11 +113,19 @@ type Querier interface {
 	// Same aggregates as SummarizePeriodTotals but filtered to [from_date, to_date].
 	// Used to compute biweekly / weekly sub-period breakdowns on the fly.
 	SummarizePeriodTotalsInRange(ctx context.Context, arg SummarizePeriodTotalsInRangeParams) (SummarizePeriodTotalsInRangeRow, error)
+	// Returns the top description values by total expense amount.
+	// Only rows with a non-empty description are included so purely note-based
+	// transactions do not pollute the merchant list.
+	TopMerchants(ctx context.Context, trackingPeriodID uuid.UUID) ([]TopMerchantsRow, error)
 	UpdateAccount(ctx context.Context, arg UpdateAccountParams) (Account, error)
 	UpdateBudget(ctx context.Context, arg UpdateBudgetParams) (Budget, error)
 	UpdateCategory(ctx context.Context, arg UpdateCategoryParams) (Category, error)
 	UpdateRecurringTransaction(ctx context.Context, arg UpdateRecurringTransactionParams) (RecurringTransaction, error)
 	UpdateSavingsGoal(ctx context.Context, arg UpdateSavingsGoalParams) (SavingsGoal, error)
+	// Populates the JSONB breakdown columns on an existing summary row. Called
+	// after the row is created so we can compute breakdowns in Go and set them
+	// in a second step without reopening the creation transaction.
+	UpdateTrackingPeriodSummaryBreakdowns(ctx context.Context, arg UpdateTrackingPeriodSummaryBreakdownsParams) (TrackingPeriodSummary, error)
 	// tracking_period_id is intentionally NOT updatable (a transaction stays in its
 	// period). The validate_transaction_period trigger re-checks date/period here.
 	UpdateTransaction(ctx context.Context, arg UpdateTransactionParams) (Transaction, error)

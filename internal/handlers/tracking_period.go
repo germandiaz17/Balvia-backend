@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"encoding/json"
 	"time"
 
 	"github.com/go-playground/validator/v10"
@@ -24,13 +25,14 @@ func NewTrackingPeriodHandler(svc *services.PeriodQueryService, v *validator.Val
 }
 
 // Register mounts the routes (the caller is responsible for auth middleware).
-// Order matters: /active and /:id/summary must be registered before /:id to
-// prevent Fiber's wildcard from swallowing those named paths.
+// Order matters: /active, /:id/summary and /:id/insights must be registered
+// before /:id to prevent Fiber's wildcard from swallowing those named paths.
 func (h *TrackingPeriodHandler) Register(r fiber.Router) {
 	g := r.Group("/tracking-periods")
 	g.Get("/", h.List)
 	g.Get("/active", h.GetActive)
 	g.Get("/:id/summary", h.Summary)
+	g.Get("/:id/insights", h.Insights)
 	g.Get("/:id", h.Get)
 }
 
@@ -82,24 +84,80 @@ type subPeriodResponse struct {
 }
 
 // summaryResponse is the JSON shape returned by GET /tracking-periods/:id/summary.
+// For closed periods the JSONB breakdown fields (expense_by_category, etc.) are
+// populated from the stored snapshot; for active periods they are omitted (null).
 type summaryResponse struct {
-	PeriodID                string              `json:"period_id"`
-	View                    string              `json:"view"`
-	TotalIncome             string              `json:"total_income"`
-	TotalExpenses           string              `json:"total_expenses"`
-	TotalTransfers          string              `json:"total_transfers"`
-	NetSavings              string              `json:"net_savings"`
-	SavingsRate             string              `json:"savings_rate"`
-	TransactionCount        int32               `json:"transaction_count"`
-	ExpenseTransactionCount int32               `json:"expense_transaction_count"`
-	IncomeTransactionCount  int32               `json:"income_transaction_count"`
-	TopExpenseCategoryID    *uuid.UUID          `json:"top_expense_category_id"`
-	TopExpenseCategoryTotal *string             `json:"top_expense_category_total"`
-	SubPeriods              []subPeriodResponse `json:"sub_periods,omitempty"`
+	PeriodID                string     `json:"period_id"`
+	View                    string     `json:"view"`
+	TotalIncome             string     `json:"total_income"`
+	TotalExpenses           string     `json:"total_expenses"`
+	TotalTransfers          string     `json:"total_transfers"`
+	NetSavings              string     `json:"net_savings"`
+	SavingsRate             string     `json:"savings_rate"`
+	TransactionCount        int32      `json:"transaction_count"`
+	ExpenseTransactionCount int32      `json:"expense_transaction_count"`
+	IncomeTransactionCount  int32      `json:"income_transaction_count"`
+	TopExpenseCategoryID    *uuid.UUID `json:"top_expense_category_id"`
+	TopExpenseCategoryTotal *string    `json:"top_expense_category_total"`
+	// JSONB breakdowns — only present for closed periods (stored snapshots).
+	ExpenseByCategory json.RawMessage     `json:"expense_by_category,omitempty"`
+	IncomeByCategory  json.RawMessage     `json:"income_by_category,omitempty"`
+	ExpenseByAccount  json.RawMessage     `json:"expense_by_account,omitempty"`
+	ExpenseByDay      json.RawMessage     `json:"expense_by_day,omitempty"`
+	BudgetPerformance json.RawMessage     `json:"budget_performance,omitempty"`
+	VsPreviousPeriod  json.RawMessage     `json:"vs_previous_period,omitempty"`
+	SubPeriods        []subPeriodResponse `json:"sub_periods,omitempty"`
+}
+
+// insightResponse is the JSON shape of a single tracking_period_insights row.
+type insightResponse struct {
+	ID                uuid.UUID       `json:"id"`
+	InsightType       string          `json:"insight_type"`
+	CalculationPhase  string          `json:"calculation_phase"`
+	Severity          string          `json:"severity"`
+	Title             string          `json:"title"`
+	Message           string          `json:"message"`
+	ActionLabel       *string         `json:"action_label"`
+	ActionTarget      *string         `json:"action_target"`
+	Data              json.RawMessage `json:"data"`
+	RelatedCategoryID *uuid.UUID      `json:"related_category_id"`
+	RelatedAccountID  *uuid.UUID      `json:"related_account_id"`
+	RelatedGoalID     *uuid.UUID      `json:"related_goal_id"`
+	CreatedAt         string          `json:"created_at"`
+}
+
+func toInsightResponse(i sqlc.TrackingPeriodInsight) insightResponse {
+	r := insightResponse{
+		ID:               i.ID,
+		InsightType:      i.InsightType,
+		CalculationPhase: i.CalculationPhase,
+		Severity:         i.Severity,
+		Title:            i.Title,
+		Message:          i.Message,
+		ActionLabel:      i.ActionLabel,
+		ActionTarget:     i.ActionTarget,
+		Data:             json.RawMessage(i.Data),
+		CreatedAt:        i.CreatedAt.Time.UTC().Format(time.RFC3339),
+	}
+	if i.RelatedCategoryID.Valid {
+		uid := i.RelatedCategoryID.UUID
+		r.RelatedCategoryID = &uid
+	}
+	if i.RelatedAccountID.Valid {
+		uid := i.RelatedAccountID.UUID
+		r.RelatedAccountID = &uid
+	}
+	if i.RelatedGoalID.Valid {
+		uid := i.RelatedGoalID.UUID
+		r.RelatedGoalID = &uid
+	}
+	return r
 }
 
 // toSummaryResponse maps a services.PeriodSummary to the wire response.
-func toSummaryResponse(s services.PeriodSummary) summaryResponse {
+// snapshot, if non-nil, provides the JSONB breakdown fields from the stored
+// summary row (only available for closed periods).
+func toSummaryResponse(s services.PeriodSummary, snapshot *sqlc.TrackingPeriodSummary) summaryResponse {
 	var topTotal *string
 	if s.TopExpenseCategoryTotal != nil {
 		t := s.TopExpenseCategoryTotal.String()
@@ -123,7 +181,7 @@ func toSummaryResponse(s services.PeriodSummary) summaryResponse {
 		})
 	}
 
-	return summaryResponse{
+	resp := summaryResponse{
 		PeriodID:                s.PeriodID.String(),
 		View:                    s.View,
 		TotalIncome:             s.TotalIncome.String(),
@@ -138,6 +196,39 @@ func toSummaryResponse(s services.PeriodSummary) summaryResponse {
 		TopExpenseCategoryTotal: topTotal,
 		SubPeriods:              subs,
 	}
+
+	// Attach JSONB breakdowns from snapshot for closed periods.
+	if snapshot != nil {
+		if isNonEmptyJSON(snapshot.ExpenseByCategory) {
+			resp.ExpenseByCategory = json.RawMessage(snapshot.ExpenseByCategory)
+		}
+		if isNonEmptyJSON(snapshot.IncomeByCategory) {
+			resp.IncomeByCategory = json.RawMessage(snapshot.IncomeByCategory)
+		}
+		if isNonEmptyJSON(snapshot.ExpenseByAccount) {
+			resp.ExpenseByAccount = json.RawMessage(snapshot.ExpenseByAccount)
+		}
+		if isNonEmptyJSON(snapshot.ExpenseByDay) {
+			resp.ExpenseByDay = json.RawMessage(snapshot.ExpenseByDay)
+		}
+		if isNonEmptyJSON(snapshot.BudgetPerformance) {
+			resp.BudgetPerformance = json.RawMessage(snapshot.BudgetPerformance)
+		}
+		if isNonEmptyJSON(snapshot.VsPreviousPeriod) {
+			resp.VsPreviousPeriod = json.RawMessage(snapshot.VsPreviousPeriod)
+		}
+	}
+
+	return resp
+}
+
+// isNonEmptyJSON returns true if b is non-nil, non-empty and not a bare null/[].
+func isNonEmptyJSON(b []byte) bool {
+	if len(b) == 0 {
+		return false
+	}
+	s := string(b)
+	return s != "null" && s != "[]" && s != "{}"
 }
 
 // List handles GET /tracking-periods.
@@ -188,6 +279,7 @@ func (h *TrackingPeriodHandler) Get(c *fiber.Ctx) error {
 }
 
 // Summary handles GET /tracking-periods/:id/summary?view=full|biweekly|weekly.
+// For closed periods, the response includes the stored JSONB breakdown fields.
 func (h *TrackingPeriodHandler) Summary(c *fiber.Ctx) error {
 	userID, ok := middleware.UserID(c)
 	if !ok {
@@ -198,9 +290,32 @@ func (h *TrackingPeriodHandler) Summary(c *fiber.Ctx) error {
 		return fiber.NewError(fiber.StatusBadRequest, "invalid id")
 	}
 	view := c.Query("view", services.ViewFull)
-	summary, err := h.svc.Summary(c.Context(), userID, id, view)
+	summary, snapshot, err := h.svc.SummaryWithSnapshot(c.Context(), userID, id, view)
 	if err != nil {
 		return mapDomainError(err)
 	}
-	return c.JSON(toSummaryResponse(summary))
+	return c.JSON(toSummaryResponse(summary, snapshot))
+}
+
+// Insights handles GET /tracking-periods/:id/insights.
+// Returns the "final" insights generated at close time. Empty array when the
+// period is still active or no insights have been generated yet.
+func (h *TrackingPeriodHandler) Insights(c *fiber.Ctx) error {
+	userID, ok := middleware.UserID(c)
+	if !ok {
+		return fiber.NewError(fiber.StatusUnauthorized, "unauthenticated")
+	}
+	id, err := uuid.Parse(c.Params("id"))
+	if err != nil {
+		return fiber.NewError(fiber.StatusBadRequest, "invalid id")
+	}
+	insights, err := h.svc.GetInsights(c.Context(), userID, id)
+	if err != nil {
+		return mapDomainError(err)
+	}
+	out := make([]insightResponse, 0, len(insights))
+	for _, ins := range insights {
+		out = append(out, toInsightResponse(ins))
+	}
+	return c.JSON(fiber.Map{"insights": out, "count": len(out)})
 }

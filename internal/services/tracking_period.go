@@ -108,10 +108,18 @@ func (s *PeriodQueryService) Get(ctx context.Context, userID, id uuid.UUID) (sql
 // periods. net_savings = income - expenses; savings_rate = net_savings /
 // income * 100 (0 when income is zero).
 func (s *PeriodQueryService) Summary(ctx context.Context, userID, id uuid.UUID, view string) (PeriodSummary, error) {
+	sum, _, err := s.SummaryWithSnapshot(ctx, userID, id, view)
+	return sum, err
+}
+
+// SummaryWithSnapshot is like Summary but also returns the stored DB snapshot
+// (non-nil only for closed periods that have a summary row). The snapshot
+// carries the JSONB breakdown fields that are shown in the API response.
+func (s *PeriodQueryService) SummaryWithSnapshot(ctx context.Context, userID, id uuid.UUID, view string) (PeriodSummary, *sqlc.TrackingPeriodSummary, error) {
 	// Validate ownership first.
 	period, err := s.Get(ctx, userID, id)
 	if err != nil {
-		return PeriodSummary{}, err
+		return PeriodSummary{}, nil, err
 	}
 
 	// Normalize view value.
@@ -125,7 +133,7 @@ func (s *PeriodQueryService) Summary(ctx context.Context, userID, id uuid.UUID, 
 	// Full-period aggregates (always computed).
 	totals, err := s.store.SummarizePeriodTotals(ctx, id)
 	if err != nil {
-		return PeriodSummary{}, err
+		return PeriodSummary{}, nil, err
 	}
 
 	netSavings := totals.TotalIncome.Sub(totals.TotalExpenses)
@@ -146,10 +154,10 @@ func (s *PeriodQueryService) Summary(ctx context.Context, userID, id uuid.UUID, 
 		amt := top.Total
 		topCatAmt = &amt
 	} else if !errors.Is(err, pgx.ErrNoRows) {
-		return PeriodSummary{}, err
+		return PeriodSummary{}, nil, err
 	}
 
-	summary := PeriodSummary{
+	periodSummary := PeriodSummary{
 		PeriodID:                id,
 		View:                    view,
 		TotalIncome:             totals.TotalIncome,
@@ -172,12 +180,22 @@ func (s *PeriodQueryService) Summary(ctx context.Context, userID, id uuid.UUID, 
 		}
 		subPeriods, err := s.buildSubPeriods(ctx, id, period, blocks)
 		if err != nil {
-			return PeriodSummary{}, err
+			return PeriodSummary{}, nil, err
 		}
-		summary.SubPeriods = subPeriods
+		periodSummary.SubPeriods = subPeriods
 	}
 
-	return summary, nil
+	// For closed periods, also fetch the stored snapshot (JSONB breakdowns).
+	var snapshot *sqlc.TrackingPeriodSummary
+	if period.Status == "closed" {
+		snap, err := s.store.GetTrackingPeriodSummary(ctx, id)
+		if err == nil {
+			snapshot = &snap
+		}
+		// If summary not found (shouldn't happen for closed periods), just omit it.
+	}
+
+	return periodSummary, snapshot, nil
 }
 
 // buildSubPeriods divides [start_date, end_date] into n contiguous date blocks
@@ -244,6 +262,16 @@ func (s *PeriodQueryService) buildSubPeriods(
 	}
 
 	return result, nil
+}
+
+// GetInsights returns the "final" (close-time) insights for the given period.
+// Returns domain.ErrNotFound when the period does not belong to the user.
+func (s *PeriodQueryService) GetInsights(ctx context.Context, userID, periodID uuid.UUID) ([]sqlc.TrackingPeriodInsight, error) {
+	// Validate ownership first.
+	if _, err := s.Get(ctx, userID, periodID); err != nil {
+		return nil, err
+	}
+	return s.store.GetFinalInsights(ctx, periodID, userID)
 }
 
 // activePeriod returns the user's active period, lazily closing (and rolling
