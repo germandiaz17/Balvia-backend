@@ -83,9 +83,11 @@ func main() {
 	budgetHandler := handlers.NewBudgetHandler(services.NewBudgetService(store), validate)
 	trackingPeriodHandler := handlers.NewTrackingPeriodHandler(services.NewPeriodQueryService(store), validate)
 	savingsGoalHandler := handlers.NewSavingsGoalHandler(services.NewSavingsGoalService(store), validate)
-	recurringHandler := handlers.NewRecurringTransactionHandler(services.NewRecurringTransactionService(store), validate)
 
 	periodSvc := services.NewPeriodService(store, log)
+	recurringEngineSvc := services.NewRecurringEngineService(store, log)
+
+	recurringHandler := handlers.NewRecurringTransactionHandler(services.NewRecurringTransactionService(store), recurringEngineSvc, validate)
 
 	api := app.Group("/api/v1")
 	// Public routes (no token required).
@@ -123,11 +125,14 @@ func main() {
 		return c.JSON(fiber.Map{"status": "ok", "db": "up"})
 	})
 
-	// Background scheduler: close due tracking periods nightly (lazy close on
-	// access is the fallback). Stopped via context on shutdown.
+	// Background schedulers: stopped via context on shutdown.
 	schedCtx, stopScheduler := context.WithCancel(context.Background())
 	defer stopScheduler()
+	// Close due tracking periods hourly (lazy close on access is the fallback).
 	go runCloseScheduler(schedCtx, periodSvc, log)
+	// Materialise due recurring transactions hourly (lazy trigger on API access
+	// is the fallback).
+	go runRecurringScheduler(schedCtx, recurringEngineSvc, log)
 
 	// Start the server in a goroutine so main can wait for shutdown signals.
 	go func() {
@@ -169,6 +174,38 @@ func runCloseScheduler(ctx context.Context, svc *services.PeriodService, log zer
 		}
 		if n > 0 {
 			log.Info().Int("closed", n).Msg("closed due tracking periods")
+		}
+	}
+
+	run() // catch up immediately on startup
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			run()
+		}
+	}
+}
+
+// runRecurringScheduler periodically materialises due recurring transaction
+// templates into real transactions. Runs once on startup (catch-up) then
+// hourly. The lazy trigger on GET /recurring-transactions is the per-user
+// fallback.
+func runRecurringScheduler(ctx context.Context, svc *services.RecurringEngineService, log zerolog.Logger) {
+	const interval = time.Hour
+
+	run := func() {
+		n, err := svc.ProcessDueRecurring(ctx)
+		if err != nil {
+			log.Error().Err(err).Msg("recurring-engine job failed")
+			return
+		}
+		if n > 0 {
+			log.Info().Int("generated", n).Msg("materialised recurring transactions")
 		}
 	}
 

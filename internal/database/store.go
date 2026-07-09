@@ -3,6 +3,7 @@ package database
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -43,6 +44,12 @@ type Store interface {
 	// updates the goal's current_amount. If the new total meets or exceeds the
 	// target_amount the goal is marked achieved.
 	CreateContributionTx(ctx context.Context, arg CreateContributionTxParams) (CreateContributionTxResult, error)
+
+	// MaterialiseRecurringTx generates one transaction for a single occurrence
+	// of a recurring template and advances the template's next_due_date —
+	// all atomically. It is idempotent: if a transaction for (templateID, date)
+	// already exists the call is a no-op (returns the existing transaction).
+	MaterialiseRecurringTx(ctx context.Context, arg MaterialiseRecurringParams) (sqlc.Transaction, error)
 }
 
 // SQLStore is the pgx-backed implementation of Store.
@@ -75,6 +82,34 @@ func (s *SQLStore) execTx(ctx context.Context, fn func(*sqlc.Queries) error) err
 	}
 
 	return tx.Commit(ctx)
+}
+
+// MaterialiseRecurringParams is the input for MaterialiseRecurringTx.
+// The caller (RecurringEngineService) pre-computes all dates and the next
+// iteration value; the store only does the DB work.
+type MaterialiseRecurringParams struct {
+	// Template is the recurring_transaction row being materialised.
+	Template sqlc.RecurringTransaction
+
+	// OccurrenceDate is the date of the specific occurrence being generated
+	// (the current value of next_due_date at the time of generation).
+	OccurrenceDate time.Time
+
+	// TransactionDate is the date written to the generated transaction row.
+	// For the current occurrence it is min(OccurrenceDate, today) clamped to
+	// the active period's [start_date, end_date].
+	TransactionDate time.Time
+
+	// TrackingPeriodID is the user's currently active period.
+	TrackingPeriodID uuid.UUID
+
+	// NextDueDate is the next scheduled occurrence after this one. When nil
+	// the template has been exhausted (end_date reached).
+	NextDueDate *time.Time
+
+	// StillActive signals whether the template should remain active after
+	// this generation step.
+	StillActive bool
 }
 
 // OnboardUserParams carries the fully-computed inputs for onboarding. The

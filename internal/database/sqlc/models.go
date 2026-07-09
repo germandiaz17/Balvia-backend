@@ -183,30 +183,32 @@ type TrackingPeriodSummary struct {
 }
 
 type Transaction struct {
-	ID                    uuid.UUID           `json:"id"`
-	UserID                uuid.UUID           `json:"user_id"`
-	TrackingPeriodID      uuid.UUID           `json:"tracking_period_id"`
-	AccountID             uuid.UUID           `json:"account_id"`
-	CategoryID            uuid.NullUUID       `json:"category_id"`
-	TransactionType       string              `json:"transaction_type"`
-	Amount                decimal.Decimal     `json:"amount"`
-	Currency              string              `json:"currency"`
-	Description           *string             `json:"description"`
-	Notes                 *string             `json:"notes"`
-	TransactionDate       pgtype.Date         `json:"transaction_date"`
-	TransferAccountID     uuid.NullUUID       `json:"transfer_account_id"`
-	AiCategorized         bool                `json:"ai_categorized"`
-	AiConfidence          decimal.NullDecimal `json:"ai_confidence"`
-	AiSuggestedCategoryID uuid.NullUUID       `json:"ai_suggested_category_id"`
-	VoiceInput            bool                `json:"voice_input"`
-	RawVoiceText          *string             `json:"raw_voice_text"`
-	LocationLat           decimal.NullDecimal `json:"location_lat"`
-	LocationLng           decimal.NullDecimal `json:"location_lng"`
-	ClientID              *string             `json:"client_id"`
-	SyncedAt              pgtype.Timestamptz  `json:"synced_at"`
-	CreatedAt             pgtype.Timestamptz  `json:"created_at"`
-	UpdatedAt             pgtype.Timestamptz  `json:"updated_at"`
-	DeletedAt             pgtype.Timestamptz  `json:"deleted_at"`
+	ID                     uuid.UUID           `json:"id"`
+	UserID                 uuid.UUID           `json:"user_id"`
+	TrackingPeriodID       uuid.UUID           `json:"tracking_period_id"`
+	AccountID              uuid.UUID           `json:"account_id"`
+	CategoryID             uuid.NullUUID       `json:"category_id"`
+	TransactionType        string              `json:"transaction_type"`
+	Amount                 decimal.Decimal     `json:"amount"`
+	Currency               string              `json:"currency"`
+	Description            *string             `json:"description"`
+	Notes                  *string             `json:"notes"`
+	TransactionDate        pgtype.Date         `json:"transaction_date"`
+	TransferAccountID      uuid.NullUUID       `json:"transfer_account_id"`
+	AiCategorized          bool                `json:"ai_categorized"`
+	AiConfidence           decimal.NullDecimal `json:"ai_confidence"`
+	AiSuggestedCategoryID  uuid.NullUUID       `json:"ai_suggested_category_id"`
+	VoiceInput             bool                `json:"voice_input"`
+	RawVoiceText           *string             `json:"raw_voice_text"`
+	LocationLat            decimal.NullDecimal `json:"location_lat"`
+	LocationLng            decimal.NullDecimal `json:"location_lng"`
+	ClientID               *string             `json:"client_id"`
+	SyncedAt               pgtype.Timestamptz  `json:"synced_at"`
+	CreatedAt              pgtype.Timestamptz  `json:"created_at"`
+	UpdatedAt              pgtype.Timestamptz  `json:"updated_at"`
+	DeletedAt              pgtype.Timestamptz  `json:"deleted_at"`
+	RecurringTransactionID uuid.NullUUID       `json:"recurring_transaction_id"`
+	OccurrenceDate         pgtype.Date         `json:"occurrence_date"`
 }
 
 type User struct {

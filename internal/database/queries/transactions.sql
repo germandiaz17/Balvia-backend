@@ -11,7 +11,9 @@ INSERT INTO transactions (
     notes,
     transaction_date,
     transfer_account_id,
-    client_id
+    client_id,
+    recurring_transaction_id,
+    occurrence_date
 ) VALUES (
     sqlc.arg(user_id),
     sqlc.arg(tracking_period_id),
@@ -24,7 +26,9 @@ INSERT INTO transactions (
     sqlc.narg(notes),
     sqlc.arg(transaction_date),
     sqlc.narg(transfer_account_id),
-    sqlc.narg(client_id)
+    sqlc.narg(client_id),
+    sqlc.narg(recurring_transaction_id),
+    sqlc.narg(occurrence_date)
 )
 RETURNING *;
 

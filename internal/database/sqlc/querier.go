@@ -13,6 +13,11 @@ import (
 
 type Querier interface {
 	AdjustAccountBalance(ctx context.Context, arg AdjustAccountBalanceParams) error
+	// After materialising one occurrence, update the template:
+	//   - last_generated_date ← the occurrence date just generated
+	//   - next_due_date       ← the next scheduled occurrence (computed by Go)
+	//   - is_active           ← caller sets to FALSE when end_date is exhausted
+	AdvanceRecurringTransaction(ctx context.Context, arg AdvanceRecurringTransactionParams) (RecurringTransaction, error)
 	// Atomically adds the contribution amount to current_amount. If the resulting
 	// current_amount meets or exceeds target_amount and the goal is not already
 	// achieved, marks it achieved and sets achieved_at = NOW().
@@ -52,6 +57,11 @@ type Querier interface {
 	GetUserByEmail(ctx context.Context, email string) (User, error)
 	GetUserByID(ctx context.Context, id uuid.UUID) (User, error)
 	GetUserSettingsByUserID(ctx context.Context, userID uuid.UUID) (UserSetting, error)
+	// Idempotency guard: returns TRUE if a non-deleted transaction already exists
+	// for this (template, occurrence_date) pair, avoiding duplicate generation
+	// on re-runs. We use occurrence_date (the original scheduled date) rather
+	// than transaction_date (which may be clamped to the period bounds).
+	HasRecurringTransactionForDate(ctx context.Context, arg HasRecurringTransactionForDateParams) (bool, error)
 	ListAccounts(ctx context.Context, userID uuid.UUID) ([]Account, error)
 	// Internal: used when copying budgets onto a freshly generated period.
 	ListBudgetsByPeriod(ctx context.Context, trackingPeriodID uuid.UUID) ([]Budget, error)
@@ -61,6 +71,10 @@ type Querier interface {
 	ListContributionsForGoal(ctx context.Context, arg ListContributionsForGoalParams) ([]SavingsGoalContribution, error)
 	// Active periods whose end_date is strictly before the given date (i.e. over).
 	ListDueActivePeriods(ctx context.Context, endDate pgtype.Date) ([]TrackingPeriod, error)
+	// Returns all active, non-deleted recurring templates whose next_due_date is
+	// on or before the given date. Used by the recurrence engine (scheduler +
+	// lazy trigger) to find templates that need materialization.
+	ListDueRecurringTransactions(ctx context.Context, dueBefore pgtype.Date) ([]RecurringTransaction, error)
 	ListRecurringTransactionsForUser(ctx context.Context, userID uuid.UUID) ([]RecurringTransaction, error)
 	ListSavingsGoalsForUser(ctx context.Context, userID uuid.UUID) ([]SavingsGoal, error)
 	ListSystemCategories(ctx context.Context) ([]Category, error)

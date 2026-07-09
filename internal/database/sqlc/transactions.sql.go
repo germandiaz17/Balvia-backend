@@ -26,7 +26,9 @@ INSERT INTO transactions (
     notes,
     transaction_date,
     transfer_account_id,
-    client_id
+    client_id,
+    recurring_transaction_id,
+    occurrence_date
 ) VALUES (
     $1,
     $2,
@@ -39,24 +41,28 @@ INSERT INTO transactions (
     $9,
     $10,
     $11,
-    $12
+    $12,
+    $13,
+    $14
 )
-RETURNING id, user_id, tracking_period_id, account_id, category_id, transaction_type, amount, currency, description, notes, transaction_date, transfer_account_id, ai_categorized, ai_confidence, ai_suggested_category_id, voice_input, raw_voice_text, location_lat, location_lng, client_id, synced_at, created_at, updated_at, deleted_at
+RETURNING id, user_id, tracking_period_id, account_id, category_id, transaction_type, amount, currency, description, notes, transaction_date, transfer_account_id, ai_categorized, ai_confidence, ai_suggested_category_id, voice_input, raw_voice_text, location_lat, location_lng, client_id, synced_at, created_at, updated_at, deleted_at, recurring_transaction_id, occurrence_date
 `
 
 type CreateTransactionParams struct {
-	UserID            uuid.UUID       `json:"user_id"`
-	TrackingPeriodID  uuid.UUID       `json:"tracking_period_id"`
-	AccountID         uuid.UUID       `json:"account_id"`
-	CategoryID        uuid.NullUUID   `json:"category_id"`
-	TransactionType   string          `json:"transaction_type"`
-	Amount            decimal.Decimal `json:"amount"`
-	Currency          string          `json:"currency"`
-	Description       *string         `json:"description"`
-	Notes             *string         `json:"notes"`
-	TransactionDate   pgtype.Date     `json:"transaction_date"`
-	TransferAccountID uuid.NullUUID   `json:"transfer_account_id"`
-	ClientID          *string         `json:"client_id"`
+	UserID                 uuid.UUID       `json:"user_id"`
+	TrackingPeriodID       uuid.UUID       `json:"tracking_period_id"`
+	AccountID              uuid.UUID       `json:"account_id"`
+	CategoryID             uuid.NullUUID   `json:"category_id"`
+	TransactionType        string          `json:"transaction_type"`
+	Amount                 decimal.Decimal `json:"amount"`
+	Currency               string          `json:"currency"`
+	Description            *string         `json:"description"`
+	Notes                  *string         `json:"notes"`
+	TransactionDate        pgtype.Date     `json:"transaction_date"`
+	TransferAccountID      uuid.NullUUID   `json:"transfer_account_id"`
+	ClientID               *string         `json:"client_id"`
+	RecurringTransactionID uuid.NullUUID   `json:"recurring_transaction_id"`
+	OccurrenceDate         pgtype.Date     `json:"occurrence_date"`
 }
 
 func (q *Queries) CreateTransaction(ctx context.Context, arg CreateTransactionParams) (Transaction, error) {
@@ -73,6 +79,8 @@ func (q *Queries) CreateTransaction(ctx context.Context, arg CreateTransactionPa
 		arg.TransactionDate,
 		arg.TransferAccountID,
 		arg.ClientID,
+		arg.RecurringTransactionID,
+		arg.OccurrenceDate,
 	)
 	var i Transaction
 	err := row.Scan(
@@ -100,12 +108,14 @@ func (q *Queries) CreateTransaction(ctx context.Context, arg CreateTransactionPa
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.DeletedAt,
+		&i.RecurringTransactionID,
+		&i.OccurrenceDate,
 	)
 	return i, err
 }
 
 const getTransaction = `-- name: GetTransaction :one
-SELECT id, user_id, tracking_period_id, account_id, category_id, transaction_type, amount, currency, description, notes, transaction_date, transfer_account_id, ai_categorized, ai_confidence, ai_suggested_category_id, voice_input, raw_voice_text, location_lat, location_lng, client_id, synced_at, created_at, updated_at, deleted_at FROM transactions
+SELECT id, user_id, tracking_period_id, account_id, category_id, transaction_type, amount, currency, description, notes, transaction_date, transfer_account_id, ai_categorized, ai_confidence, ai_suggested_category_id, voice_input, raw_voice_text, location_lat, location_lng, client_id, synced_at, created_at, updated_at, deleted_at, recurring_transaction_id, occurrence_date FROM transactions
 WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL
 `
 
@@ -142,12 +152,14 @@ func (q *Queries) GetTransaction(ctx context.Context, arg GetTransactionParams) 
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.DeletedAt,
+		&i.RecurringTransactionID,
+		&i.OccurrenceDate,
 	)
 	return i, err
 }
 
 const listTransactionsByPeriod = `-- name: ListTransactionsByPeriod :many
-SELECT id, user_id, tracking_period_id, account_id, category_id, transaction_type, amount, currency, description, notes, transaction_date, transfer_account_id, ai_categorized, ai_confidence, ai_suggested_category_id, voice_input, raw_voice_text, location_lat, location_lng, client_id, synced_at, created_at, updated_at, deleted_at FROM transactions
+SELECT id, user_id, tracking_period_id, account_id, category_id, transaction_type, amount, currency, description, notes, transaction_date, transfer_account_id, ai_categorized, ai_confidence, ai_suggested_category_id, voice_input, raw_voice_text, location_lat, location_lng, client_id, synced_at, created_at, updated_at, deleted_at, recurring_transaction_id, occurrence_date FROM transactions
 WHERE user_id = $1 AND tracking_period_id = $2 AND deleted_at IS NULL
 ORDER BY transaction_date DESC, created_at DESC
 `
@@ -191,6 +203,8 @@ func (q *Queries) ListTransactionsByPeriod(ctx context.Context, arg ListTransact
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.DeletedAt,
+			&i.RecurringTransactionID,
+			&i.OccurrenceDate,
 		); err != nil {
 			return nil, err
 		}
@@ -206,7 +220,7 @@ const softDeleteTransaction = `-- name: SoftDeleteTransaction :one
 UPDATE transactions
 SET deleted_at = NOW(), updated_at = NOW()
 WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL
-RETURNING id, user_id, tracking_period_id, account_id, category_id, transaction_type, amount, currency, description, notes, transaction_date, transfer_account_id, ai_categorized, ai_confidence, ai_suggested_category_id, voice_input, raw_voice_text, location_lat, location_lng, client_id, synced_at, created_at, updated_at, deleted_at
+RETURNING id, user_id, tracking_period_id, account_id, category_id, transaction_type, amount, currency, description, notes, transaction_date, transfer_account_id, ai_categorized, ai_confidence, ai_suggested_category_id, voice_input, raw_voice_text, location_lat, location_lng, client_id, synced_at, created_at, updated_at, deleted_at, recurring_transaction_id, occurrence_date
 `
 
 type SoftDeleteTransactionParams struct {
@@ -242,6 +256,8 @@ func (q *Queries) SoftDeleteTransaction(ctx context.Context, arg SoftDeleteTrans
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.DeletedAt,
+		&i.RecurringTransactionID,
+		&i.OccurrenceDate,
 	)
 	return i, err
 }
@@ -259,7 +275,7 @@ SET account_id = $1,
     transfer_account_id = $9,
     updated_at = NOW()
 WHERE id = $10 AND user_id = $11 AND deleted_at IS NULL
-RETURNING id, user_id, tracking_period_id, account_id, category_id, transaction_type, amount, currency, description, notes, transaction_date, transfer_account_id, ai_categorized, ai_confidence, ai_suggested_category_id, voice_input, raw_voice_text, location_lat, location_lng, client_id, synced_at, created_at, updated_at, deleted_at
+RETURNING id, user_id, tracking_period_id, account_id, category_id, transaction_type, amount, currency, description, notes, transaction_date, transfer_account_id, ai_categorized, ai_confidence, ai_suggested_category_id, voice_input, raw_voice_text, location_lat, location_lng, client_id, synced_at, created_at, updated_at, deleted_at, recurring_transaction_id, occurrence_date
 `
 
 type UpdateTransactionParams struct {
@@ -318,6 +334,8 @@ func (q *Queries) UpdateTransaction(ctx context.Context, arg UpdateTransactionPa
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.DeletedAt,
+		&i.RecurringTransactionID,
+		&i.OccurrenceDate,
 	)
 	return i, err
 }

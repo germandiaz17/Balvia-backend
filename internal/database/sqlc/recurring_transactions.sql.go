@@ -13,6 +13,61 @@ import (
 	"github.com/shopspring/decimal"
 )
 
+const advanceRecurringTransaction = `-- name: AdvanceRecurringTransaction :one
+UPDATE recurring_transactions
+SET last_generated_date = $1,
+    next_due_date       = $2,
+    is_active           = $3,
+    updated_at          = NOW()
+WHERE id = $4 AND deleted_at IS NULL
+RETURNING id, user_id, account_id, category_id, name, transaction_type, amount, currency, description, frequency, custom_interval_days, day_of_month, day_of_week, start_date, end_date, last_generated_date, next_due_date, is_active, created_at, updated_at, deleted_at
+`
+
+type AdvanceRecurringTransactionParams struct {
+	LastGeneratedDate pgtype.Date `json:"last_generated_date"`
+	NextDueDate       pgtype.Date `json:"next_due_date"`
+	IsActive          bool        `json:"is_active"`
+	ID                uuid.UUID   `json:"id"`
+}
+
+// After materialising one occurrence, update the template:
+//   - last_generated_date ← the occurrence date just generated
+//   - next_due_date       ← the next scheduled occurrence (computed by Go)
+//   - is_active           ← caller sets to FALSE when end_date is exhausted
+func (q *Queries) AdvanceRecurringTransaction(ctx context.Context, arg AdvanceRecurringTransactionParams) (RecurringTransaction, error) {
+	row := q.db.QueryRow(ctx, advanceRecurringTransaction,
+		arg.LastGeneratedDate,
+		arg.NextDueDate,
+		arg.IsActive,
+		arg.ID,
+	)
+	var i RecurringTransaction
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.AccountID,
+		&i.CategoryID,
+		&i.Name,
+		&i.TransactionType,
+		&i.Amount,
+		&i.Currency,
+		&i.Description,
+		&i.Frequency,
+		&i.CustomIntervalDays,
+		&i.DayOfMonth,
+		&i.DayOfWeek,
+		&i.StartDate,
+		&i.EndDate,
+		&i.LastGeneratedDate,
+		&i.NextDueDate,
+		&i.IsActive,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.DeletedAt,
+	)
+	return i, err
+}
+
 const createRecurringTransaction = `-- name: CreateRecurringTransaction :one
 INSERT INTO recurring_transactions (
     user_id, account_id, category_id, name, transaction_type, amount, currency,
@@ -141,6 +196,85 @@ func (q *Queries) GetRecurringTransaction(ctx context.Context, arg GetRecurringT
 		&i.DeletedAt,
 	)
 	return i, err
+}
+
+const hasRecurringTransactionForDate = `-- name: HasRecurringTransactionForDate :one
+SELECT EXISTS (
+    SELECT 1 FROM transactions
+    WHERE recurring_transaction_id = $1
+      AND occurrence_date = $2::DATE
+      AND deleted_at IS NULL
+) AS exists
+`
+
+type HasRecurringTransactionForDateParams struct {
+	RecurringTransactionID uuid.NullUUID `json:"recurring_transaction_id"`
+	OccurrenceDate         pgtype.Date   `json:"occurrence_date"`
+}
+
+// Idempotency guard: returns TRUE if a non-deleted transaction already exists
+// for this (template, occurrence_date) pair, avoiding duplicate generation
+// on re-runs. We use occurrence_date (the original scheduled date) rather
+// than transaction_date (which may be clamped to the period bounds).
+func (q *Queries) HasRecurringTransactionForDate(ctx context.Context, arg HasRecurringTransactionForDateParams) (bool, error) {
+	row := q.db.QueryRow(ctx, hasRecurringTransactionForDate, arg.RecurringTransactionID, arg.OccurrenceDate)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
+const listDueRecurringTransactions = `-- name: ListDueRecurringTransactions :many
+SELECT id, user_id, account_id, category_id, name, transaction_type, amount, currency, description, frequency, custom_interval_days, day_of_month, day_of_week, start_date, end_date, last_generated_date, next_due_date, is_active, created_at, updated_at, deleted_at FROM recurring_transactions
+WHERE is_active = TRUE
+  AND deleted_at IS NULL
+  AND next_due_date IS NOT NULL
+  AND next_due_date <= $1::DATE
+ORDER BY user_id, next_due_date
+`
+
+// Returns all active, non-deleted recurring templates whose next_due_date is
+// on or before the given date. Used by the recurrence engine (scheduler +
+// lazy trigger) to find templates that need materialization.
+func (q *Queries) ListDueRecurringTransactions(ctx context.Context, dueBefore pgtype.Date) ([]RecurringTransaction, error) {
+	rows, err := q.db.Query(ctx, listDueRecurringTransactions, dueBefore)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []RecurringTransaction{}
+	for rows.Next() {
+		var i RecurringTransaction
+		if err := rows.Scan(
+			&i.ID,
+			&i.UserID,
+			&i.AccountID,
+			&i.CategoryID,
+			&i.Name,
+			&i.TransactionType,
+			&i.Amount,
+			&i.Currency,
+			&i.Description,
+			&i.Frequency,
+			&i.CustomIntervalDays,
+			&i.DayOfMonth,
+			&i.DayOfWeek,
+			&i.StartDate,
+			&i.EndDate,
+			&i.LastGeneratedDate,
+			&i.NextDueDate,
+			&i.IsActive,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.DeletedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const listRecurringTransactionsForUser = `-- name: ListRecurringTransactionsForUser :many

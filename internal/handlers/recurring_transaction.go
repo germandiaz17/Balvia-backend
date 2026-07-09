@@ -14,15 +14,22 @@ import (
 )
 
 // RecurringTransactionHandler exposes the recurring transaction template CRUD
-// endpoints. These endpoints manage only the templates (schedule + amount); the
-// engine that materialises templates into real transactions is not yet active.
+// endpoints. It also acts as a lazy trigger for the recurrence engine: on List
+// and Get it calls the engine for the requesting user before returning
+// templates, so that any overdue occurrences are materialised on demand even
+// when the background scheduler hasn't run.
 type RecurringTransactionHandler struct {
 	svc      *services.RecurringTransactionService
+	engine   *services.RecurringEngineService
 	validate *validator.Validate
 }
 
-func NewRecurringTransactionHandler(svc *services.RecurringTransactionService, v *validator.Validate) *RecurringTransactionHandler {
-	return &RecurringTransactionHandler{svc: svc, validate: v}
+func NewRecurringTransactionHandler(
+	svc *services.RecurringTransactionService,
+	engine *services.RecurringEngineService,
+	v *validator.Validate,
+) *RecurringTransactionHandler {
+	return &RecurringTransactionHandler{svc: svc, engine: engine, validate: v}
 }
 
 // Register mounts all routes. The caller must supply an authenticated router.
@@ -187,6 +194,10 @@ func (h *RecurringTransactionHandler) List(c *fiber.Ctx) error {
 	if !ok {
 		return fiber.NewError(fiber.StatusUnauthorized, "unauthenticated")
 	}
+	// Lazy trigger: materialise any overdue recurring transactions for this user
+	// before returning the updated template list. Errors are non-fatal (the
+	// engine logs them); the list still returns even if it partially fails.
+	_, _ = h.engine.ProcessUserRecurring(c.Context(), userID)
 	rts, err := h.svc.List(c.Context(), userID)
 	if err != nil {
 		return mapDomainError(err)
@@ -203,6 +214,8 @@ func (h *RecurringTransactionHandler) Get(c *fiber.Ctx) error {
 	if !ok {
 		return fiber.NewError(fiber.StatusUnauthorized, "unauthenticated")
 	}
+	// Lazy trigger: same as List — materialise overdue templates for the user.
+	_, _ = h.engine.ProcessUserRecurring(c.Context(), userID)
 	id, err := uuid.Parse(c.Params("id"))
 	if err != nil {
 		return fiber.NewError(fiber.StatusBadRequest, "invalid id")
