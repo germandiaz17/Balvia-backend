@@ -153,9 +153,6 @@ func collectImmediateDuringData(
 	period sqlc.TrackingPeriod,
 	userID uuid.UUID,
 ) (duringPeriodData, error) {
-	today := period.StartDate.Time // fallback; overridden below
-	_ = today
-
 	data := duringPeriodData{Period: period}
 
 	// Use server-side now in America/Bogota to match the application's "today".

@@ -40,12 +40,12 @@ import (
 // duringPeriodData bundles the data needed to compute "during" insights.
 // It is collected once per refresh call to avoid multiple round-trips.
 type duringPeriodData struct {
-	Period      sqlc.TrackingPeriod
-	Totals      sqlc.SummarizePeriodTotalsRow
+	Period        sqlc.TrackingPeriod
+	Totals        sqlc.SummarizePeriodTotalsRow
 	ExpByCategory []sqlc.ExpenseByCategoryRow
-	Budgets     []sqlc.Budget
-	Goals       []sqlc.SavingsGoal
-	GoalContribs decimal.Decimal
+	Budgets       []sqlc.Budget
+	Goals         []sqlc.SavingsGoal
+	GoalContribs  decimal.Decimal
 
 	// PrevSummary is the snapshot of the preceding closed period (nil if none).
 	PrevSummary *sqlc.TrackingPeriodSummary
@@ -184,14 +184,14 @@ func genSpendingPace(d duringPeriodData) *insightDraft {
 		Title:            "Ritmo de gasto",
 		Message:          msg,
 		Data: mustJSON(map[string]any{
-			"elapsed_days":       elapsedDays,
-			"total_days":         totalDays,
-			"remaining_days":     remainingDays,
-			"pct_elapsed":        pctElapsed.String(),
-			"daily_burn":         dailyBurn.Round(2).String(),
-			"total_expenses":     expenses.String(),
-			"projected_total":    projected.String(),
-			"total_income":       d.Totals.TotalIncome.String(),
+			"elapsed_days":        elapsedDays,
+			"total_days":          totalDays,
+			"remaining_days":      remainingDays,
+			"pct_elapsed":         pctElapsed.String(),
+			"daily_burn":          dailyBurn.Round(2).String(),
+			"total_expenses":      expenses.String(),
+			"projected_total":     projected.String(),
+			"total_income":        d.Totals.TotalIncome.String(),
 			"pct_of_income_spent": pctOfIncome.String(),
 		}),
 	}
@@ -412,7 +412,7 @@ func genUnusualExpense(d duringPeriodData) *insightDraft {
 			catName, pct.String(), top.Total.String(),
 		),
 		Data: mustJSON(map[string]any{
-			"category_id":   func() *string {
+			"category_id": func() *string {
 				if top.CategoryID.Valid {
 					s := top.CategoryID.UUID.String()
 					return &s
@@ -480,15 +480,15 @@ func genVsPreviousPartial(d duringPeriodData) *insightDraft {
 			pctElapsed.String(), currentSpend.String(), direction, prevEstimate.String(),
 		),
 		Data: mustJSON(map[string]any{
-			"elapsed_days":        elapsedDays,
-			"total_days":          totalDays,
-			"pct_elapsed":         pctElapsed.String(),
-			"current_expenses":    currentSpend.String(),
-			"previous_estimate":   prevEstimate.String(),
-			"previous_total":      prev.TotalExpenses.String(),
-			"delta":               delta.String(),
-			"expense_change_pct":  changePct.String(),
-			"previous_period_id":  prev.TrackingPeriodID.String(),
+			"elapsed_days":       elapsedDays,
+			"total_days":         totalDays,
+			"pct_elapsed":        pctElapsed.String(),
+			"current_expenses":   currentSpend.String(),
+			"previous_estimate":  prevEstimate.String(),
+			"previous_total":     prev.TotalExpenses.String(),
+			"delta":              delta.String(),
+			"expense_change_pct": changePct.String(),
+			"previous_period_id": prev.TrackingPeriodID.String(),
 		}),
 	}
 }
@@ -558,15 +558,15 @@ func genGoalProgressAlerts(d duringPeriodData) []insightDraft {
 				g.Name, pctComplete.String(), expectedAmount.String(), gap.String(),
 			),
 			Data: mustJSON(map[string]any{
-				"goal_id":          g.ID.String(),
-				"goal_name":        g.Name,
-				"target_amount":    g.TargetAmount.String(),
-				"current_amount":   g.CurrentAmount.String(),
-				"expected_amount":  expectedAmount.String(),
-				"gap":              gap.String(),
-				"pct_complete":     pctComplete.String(),
+				"goal_id":           g.ID.String(),
+				"goal_name":         g.Name,
+				"target_amount":     g.TargetAmount.String(),
+				"current_amount":    g.CurrentAmount.String(),
+				"expected_amount":   expectedAmount.String(),
+				"gap":               gap.String(),
+				"pct_complete":      pctComplete.String(),
 				"elapsed_goal_days": elapsedGoalDays,
-				"total_goal_days":  totalGoalDays,
+				"total_goal_days":   totalGoalDays,
 			}),
 			RelatedGoalID: relGoalID,
 		})
