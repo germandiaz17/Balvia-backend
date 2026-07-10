@@ -119,6 +119,7 @@ type SavingsGoalContribution struct {
 	ContributionDate pgtype.Date        `json:"contribution_date"`
 	Notes            *string            `json:"notes"`
 	CreatedAt        pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt        pgtype.Timestamptz `json:"updated_at"`
 }
 
 type TrackingPeriod struct {

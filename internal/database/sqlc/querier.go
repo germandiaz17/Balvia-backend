@@ -78,6 +78,8 @@ type Querier interface {
 	// Returns the snapshot summary for a closed period (used for vs_previous).
 	GetTrackingPeriodSummaryForPeriod(ctx context.Context, trackingPeriodID uuid.UUID) (TrackingPeriodSummary, error)
 	GetTransaction(ctx context.Context, arg GetTransactionParams) (Transaction, error)
+	// Used by push to detect duplicates already committed by a previous push.
+	GetTransactionByClientID(ctx context.Context, arg GetTransactionByClientIDParams) (Transaction, error)
 	GetUserByEmail(ctx context.Context, email string) (User, error)
 	GetUserByID(ctx context.Context, id uuid.UUID) (User, error)
 	GetUserSettingsByUserID(ctx context.Context, userID uuid.UUID) (UserSetting, error)
@@ -124,6 +126,26 @@ type Querier interface {
 	// Same aggregates as SummarizePeriodTotals but filtered to [from_date, to_date].
 	// Used to compute biweekly / weekly sub-period breakdowns on the fly.
 	SummarizePeriodTotalsInRange(ctx context.Context, arg SummarizePeriodTotalsInRangeParams) (SummarizePeriodTotalsInRangeRow, error)
+	SyncPullAccounts(ctx context.Context, arg SyncPullAccountsParams) ([]Account, error)
+	// Budgets have no deleted_at (hard delete). When a budget is deleted the row
+	// disappears; the client must request a full re-sync if it detects a gap.
+	// For now we return all budgets updated since $since.
+	SyncPullBudgets(ctx context.Context, arg SyncPullBudgetsParams) ([]Budget, error)
+	// Only user-owned categories; system categories are embedded in the mobile app.
+	SyncPullCategories(ctx context.Context, arg SyncPullCategoriesParams) ([]Category, error)
+	SyncPullGoalContributions(ctx context.Context, arg SyncPullGoalContributionsParams) ([]SavingsGoalContribution, error)
+	SyncPullRecurringTransactions(ctx context.Context, arg SyncPullRecurringTransactionsParams) ([]RecurringTransaction, error)
+	SyncPullSavingsGoals(ctx context.Context, arg SyncPullSavingsGoalsParams) ([]SavingsGoal, error)
+	SyncPullTrackingPeriods(ctx context.Context, arg SyncPullTrackingPeriodsParams) ([]TrackingPeriod, error)
+	// Queries used exclusively by the sync-delta endpoints (GET /sync/pull, POST /sync/push).
+	// All pull queries share a common pattern:
+	//   WHERE user_id = $user AND updated_at > $since
+	// The caller passes a UTC timestamp; rows modified (created, updated, or
+	// soft-deleted) after that timestamp are returned so the client can apply
+	// the delta to its local Drift database.
+	// Includes soft-deleted rows (deleted_at IS NOT NULL) because the client must
+	// know about deletions to remove them from its local copy.
+	SyncPullTransactions(ctx context.Context, arg SyncPullTransactionsParams) ([]Transaction, error)
 	// Returns the top description values by total expense amount.
 	// Only rows with a non-empty description are included so purely note-based
 	// transactions do not pollute the merchant list.

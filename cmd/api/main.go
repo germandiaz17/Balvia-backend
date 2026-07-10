@@ -89,6 +89,9 @@ func main() {
 
 	recurringHandler := handlers.NewRecurringTransactionHandler(services.NewRecurringTransactionService(store), recurringEngineSvc, validate)
 
+	syncSvc := services.NewSyncService(store, transactionSvc, log)
+	syncHandler := handlers.NewSyncHandler(syncSvc)
+
 	api := app.Group("/api/v1")
 	// Public routes (no token required).
 	authHandler.RegisterPublic(api)
@@ -102,6 +105,7 @@ func main() {
 	trackingPeriodHandler.Register(authed)
 	savingsGoalHandler.Register(authed)
 	recurringHandler.Register(authed)
+	syncHandler.Register(authed)
 
 	// Liveness: is the process up? (no external dependencies)
 	app.Get("/health", func(c *fiber.Ctx) error {

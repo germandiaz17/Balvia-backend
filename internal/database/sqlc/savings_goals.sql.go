@@ -146,7 +146,7 @@ INSERT INTO savings_goal_contributions (
     $5,
     $6
 )
-RETURNING id, savings_goal_id, user_id, tracking_period_id, transaction_id, amount, contribution_date, notes, created_at
+RETURNING id, savings_goal_id, user_id, tracking_period_id, transaction_id, amount, contribution_date, notes, created_at, updated_at
 `
 
 type CreateSavingsGoalContributionParams struct {
@@ -178,6 +178,7 @@ func (q *Queries) CreateSavingsGoalContribution(ctx context.Context, arg CreateS
 		&i.ContributionDate,
 		&i.Notes,
 		&i.CreatedAt,
+		&i.UpdatedAt,
 	)
 	return i, err
 }
@@ -218,7 +219,7 @@ func (q *Queries) GetSavingsGoal(ctx context.Context, arg GetSavingsGoalParams) 
 }
 
 const listContributionsForGoal = `-- name: ListContributionsForGoal :many
-SELECT id, savings_goal_id, user_id, tracking_period_id, transaction_id, amount, contribution_date, notes, created_at FROM savings_goal_contributions
+SELECT id, savings_goal_id, user_id, tracking_period_id, transaction_id, amount, contribution_date, notes, created_at, updated_at FROM savings_goal_contributions
 WHERE savings_goal_id = $1 AND user_id = $2
 ORDER BY contribution_date DESC, created_at DESC
 `
@@ -247,6 +248,7 @@ func (q *Queries) ListContributionsForGoal(ctx context.Context, arg ListContribu
 			&i.ContributionDate,
 			&i.Notes,
 			&i.CreatedAt,
+			&i.UpdatedAt,
 		); err != nil {
 			return nil, err
 		}
