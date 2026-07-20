@@ -160,7 +160,7 @@ func (q *Queries) SyncPullBudgets(ctx context.Context, arg SyncPullBudgetsParams
 
 const syncPullCategories = `-- name: SyncPullCategories :many
 SELECT id, user_id, parent_id, name, category_type, icon, color, is_system, display_order, created_at, updated_at, deleted_at FROM categories
-WHERE user_id = $1
+WHERE (user_id = $1 OR is_system = TRUE)
   AND updated_at > $2
 ORDER BY updated_at ASC, id ASC
 LIMIT $3
@@ -172,7 +172,9 @@ type SyncPullCategoriesParams struct {
 	PageSize int32              `json:"page_size"`
 }
 
-// Only user-owned categories; system categories are embedded in the mobile app.
+// User-owned categories plus the shared system set. System categories are NOT
+// embedded in the mobile app — the local DB (which the overlay bubble reads)
+// only knows what sync delivers, so they must come down the wire too.
 func (q *Queries) SyncPullCategories(ctx context.Context, arg SyncPullCategoriesParams) ([]Category, error) {
 	rows, err := q.db.Query(ctx, syncPullCategories, arg.UserID, arg.Since, arg.PageSize)
 	if err != nil {

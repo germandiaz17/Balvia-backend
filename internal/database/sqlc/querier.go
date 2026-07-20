@@ -131,7 +131,9 @@ type Querier interface {
 	// disappears; the client must request a full re-sync if it detects a gap.
 	// For now we return all budgets updated since $since.
 	SyncPullBudgets(ctx context.Context, arg SyncPullBudgetsParams) ([]Budget, error)
-	// Only user-owned categories; system categories are embedded in the mobile app.
+	// User-owned categories plus the shared system set. System categories are NOT
+	// embedded in the mobile app — the local DB (which the overlay bubble reads)
+	// only knows what sync delivers, so they must come down the wire too.
 	SyncPullCategories(ctx context.Context, arg SyncPullCategoriesParams) ([]Category, error)
 	SyncPullGoalContributions(ctx context.Context, arg SyncPullGoalContributionsParams) ([]SavingsGoalContribution, error)
 	SyncPullRecurringTransactions(ctx context.Context, arg SyncPullRecurringTransactionsParams) ([]RecurringTransaction, error)

@@ -22,9 +22,11 @@ ORDER BY updated_at ASC, id ASC
 LIMIT sqlc.arg(page_size);
 
 -- name: SyncPullCategories :many
--- Only user-owned categories; system categories are embedded in the mobile app.
+-- User-owned categories plus the shared system set. System categories are NOT
+-- embedded in the mobile app — the local DB (which the overlay bubble reads)
+-- only knows what sync delivers, so they must come down the wire too.
 SELECT * FROM categories
-WHERE user_id = sqlc.arg(user_id)
+WHERE (user_id = sqlc.arg(user_id) OR is_system = TRUE)
   AND updated_at > sqlc.arg(since)
 ORDER BY updated_at ASC, id ASC
 LIMIT sqlc.arg(page_size);
