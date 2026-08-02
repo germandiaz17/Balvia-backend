@@ -181,7 +181,7 @@ Cosas que potencialmente podrían ser reutilizables por otros proyectos.
 - **Estructura de carpetas creada** (sección 5)
 - **Dependencias instaladas** (Fiber v2, sqlx, pgx v5, validator, jwt, zerolog, godotenv, uuid, decimal, testify; CLI `sqlc` + `migrate`)
 - **`.env`/`.env.example`/`.gitignore`/`Makefile`/`sqlc.yaml` configurados**
-- **Migraciones adaptadas a golang-migrate** (12 pares `000001…000012`, desde el formato Diesel)
+- **Migraciones adaptadas a golang-migrate** (hoy **17 pares** `000001…000017`, ver sección 7)
 - **Migraciones aplicadas a Neon** (PG18, región us-east-1; pooled p/ app, directa p/ migrate)
 - **Modelos Go generados con sqlc** + pool pgx (`internal/database`)
 - **Health check** (`/health` liveness + `/health/ready` con ping a BD)
@@ -191,60 +191,75 @@ Cosas que potencialmente podrían ser reutilizables por otros proyectos.
 - **Cierre de seguimientos (paso 11)**: `ClosePeriodTx` atómico = cierra periodo + snapshot `tracking_period_summary` (totales core: income/expense/transfer, net_savings, savings_rate, conteos, top categoría) + genera el siguiente periodo contiguo + copia budgets. **Scheduler in-process** (cada hora) + **cierre perezoso** al resolver el periodo activo. Con tests E2E.
 - **Auth (paso 12)**: JWT access token + refresh token rotado (bcrypt, tabla `refresh_tokens`, migración 000013). Endpoints `/api/v1/auth/{register,login,refresh,logout,me}`. `register` reemplaza al onboarding público (crea user+settings+periodo+tokens). Middleware `JWTAuth` protege las rutas (reemplazó al stub `X-User-ID`). Con E2E.
 
-> **Contrato de API**: documentado en `../docs/API_CONTRACT.md` (fuente de verdad back⇆front). Actualízalo en el MISMO cambio en que toques un endpoint. Estado/backlog en `../docs/ROADMAP.md`.
+> **Contrato de API**: `docs/API_CONTRACT.md` (fuente de verdad back⇆front) — **aún no generado**, se
+> crea al cerrar el hito actual. Mientras tanto la fuente es el vault de Obsidian
+> (`~/Documents/Balvia Brain/02 — Arquitectura/`). Cuando exista, actualízalo en el MISMO cambio en
+> que toques un endpoint. Estado/backlog: `docs/ROADMAP.md` (idem).
 
 - **CRUD de budgets (paso 13)**: `/api/v1/budgets` (Create/List/Get/Update/Delete). Atados al **periodo activo** al crear (lazy-close incluido); `category_id` opcional (null = presupuesto global); **único por (periodo, categoría)** → 409 vía `ErrBudgetExists`; umbrales de alerta 0–100 (default 80/100); presupuestos de periodos **cerrados son inmutables** (`ErrPeriodClosed`, 422) en update/delete. Hard delete (sin `deleted_at`). Con tests de servicio.
+- **IA — categorización automática (backend, BYOK multi-proveedor)**: cada usuario trae **su propia API key** (Anthropic o cualquier endpoint **OpenAI-compatible** vía `base_url`), guardada **cifrada** (AES-256-GCM). Piezas:
+  - `internal/ai`: interface `Categorizer` + adaptadores `AnthropicCategorizer` (SDK `anthropic-sdk-go`, tool-use forzado con `enum` de ids) y `OpenAICategorizer` (`net/http` a `/chat/completions`, function calling; cubre OpenAI/Groq/OpenRouter/Ollama…); `Build()` selecciona por proveedor. `Service.Categorize` carga las settings del usuario, **descifra la key**, construye el cliente, filtra candidatos por tipo (default `expense`) y **rechaza ids alucinados**. `SettingsService` gestiona el CRUD (key **write-only**, nunca vuelve en respuestas).
+  - `internal/crypto`: `AESGCM` (encrypt/decrypt) con tests. Config `AI_ENCRYPTION_KEY` (64 hex/32 bytes, **opcional** → sin ella /ai/* da **503**).
+  - Tabla **`user_ai_settings`** (migración **000017**, 1:1 con users, `provider` CHECK, `api_key_encrypted BYTEA`, `base_url`, `model`, `enabled`). sqlc regenerado.
+  - Endpoints (todos Bearer): `PUT/GET/DELETE /api/v1/ai/settings` + `POST /api/v1/ai/categorize`. Errores: 503 (sin cifrado server), 422 (`ErrAINotConfigured`/`ErrInvalidAIProvider`), 502 (`ErrAIUpstream` — key inválida/proveedor caído).
+  - Verificado: unit tests (`ai` + `crypto`) + E2E completo (ciclo settings, key no se filtra, cadena descifrar→construir→llamar al proveedor real).
+  - **Metadata de IA en transacciones**: `transactions.ai_categorized`/`ai_confidence`/`ai_suggested_category_id` (columnas ya existían desde 000006) ahora se **setean en el create** (query sqlc `CreateTransaction` + `CreateTransactionInput` + handler `createTxnRequest`/response) y viajan por **sync push** (`PushTransactionPayload` + `txnPayloadToInput`) **y pull** (`syncTransactionResponse`). Confidence en el wire como string decimal. Verificado E2E (create/push/pull). Mobile: pantalla `/ai-settings` + "Sugerir con IA" en captura + persistencia (Drift v2). **Pendiente**: verificación visual en emulador con una key real.
+
+- **CRUD de metas de ahorro**: `/api/v1/savings-goals` (Create/List/Get/Update/Delete) + `POST/GET /:id/contributions`. `CreateContributionTx` actualiza `current_amount` y marca `achieved` **atómicamente**, resolviendo el periodo activo (con lazy-close). El `PUT` es **replace completo** (`name`, `target_amount`, `target_date`, `status` requeridos; **no** acepta `start_date`). Con tests de servicio.
+- **CRUD de transacciones recurrentes**: `/api/v1/recurring-transactions` (plantillas) + **motor de materialización** (`RecurringEngineService`) con **scheduler in-process horario** y catch-up. `computeNextDueDate` avanza `next_due_date`; al agotarse una plantilla (`end_date` alcanzado) queda `next_due_date = NULL` e `is_active = false`. ⚠️ `GET /recurring-transactions` **tiene efecto secundario**: dispara `ProcessUserRecurring` antes de responder, así que puede crear transacciones reales. Con tests de validación y del motor.
+- **Tracking periods read-only**: `GET /api/v1/tracking-periods` (list), `/active`, `/:id`, `/:id/summary?view=` (full|biweekly|weekly).
+- **Subsistema de insights**: 16 tipos — 7 "during" (`analytics_during.go`, recalculados best-effort al crear transacción y de forma perezosa al consultar) y 9 "final" (`analytics.go`, generados e inmutables al cierre). Expuestos en `GET /tracking-periods/:id/insights`, polimórfico por estado del periodo. 37 tests entre ambos generadores.
+- **Motor de sync offline-first**: `GET /api/v1/sync/pull` (delta por cursor `since`, paginado, 8 entidades, soft-deletes) + `POST /api/v1/sync/push` (por lotes, idempotente por `client_id`, rechazo por ítem). ⚠️ El push **solo soporta `entity_type: "transaction"`**; las demás constantes existen pero caen en `rejected`.
 
 ### 🔄 En progreso
-- (siguiente) Metas de ahorro / recurrentes (CRUD), o deploy
+- **Cerrar el MVP de producto**: UI móvil de metas y recurrentes (backend listo, sin pantallas) + `GET/PUT /api/v1/settings` para que el usuario pueda editar la duración de su seguimiento.
 
 ### ⏭️ Próximos pasos / pendientes conocidos
-- **Insights "final" ricos** (los 9 tipos: reduction_opportunity, vs_previous, top_merchants...) y breakdowns JSONB del summary (expense_by_category/day, budget_performance) → paso de analítica aparte
-- **CRUD de budgets, savings_goals, recurring_transactions** (tablas listas, sin endpoints aún)
-- **Insights "during"** (spending_pace, budget_warning...) en tiempo real
-12. Diseñar módulo de Auth aparte (reemplaza el middleware stub `X-User-ID` por JWT)
+- **`GET/PUT /api/v1/settings`**: `user_settings` solo tiene `Create` y `Get` en sqlc — sin `UPDATE`, sin service, sin endpoint. El usuario **no puede cambiar `tracking_duration_days`** tras registrarse, lo que deja la regla 8 (sección 3) sin camino de entrada.
+- **`/sync/push` multi-entidad**: hoy solo transactions. Bloquea que cuentas, categorías, presupuestos, metas y recurrentes se puedan mutar offline (el pull sí las trae → asimetría).
+- **`tracking_start_day` es inerte**: `ClosePeriodTx` genera el siguiente periodo como `fin_anterior + 1 día` y solo estampa el valor como metadata. Hacer real el ancla de día del mes exige absorber el desfase en la duración (el CHECK 28–31 solo permite ±3 días/ciclo) → hito propio.
+- **Breakdowns JSONB ricos del summary**: faltan `expense_by_day` y `budget_performance` en `tracking_period_summaries`.
+- **Tests faltantes**: `internal/handlers/` (nivel HTTP y `mapDomainError`), `internal/auth/` (JWT + bcrypt), `internal/middleware/` (`JWTAuth`), `services/auth.go` (rotación de refresh), `services/{account,category,period}.go`, y `database/store*.go` (toda la lógica transaccional). Todos los tests actuales son unitarios con mocks: los triggers, el EXCLUDE constraint y los CHECKs de Postgres nunca se ejercitan.
+- **Infra**: sin CORS, rate limiting ni security headers; sin paginación ni filtros en los listados; sin OpenAPI; sin CI ni Dockerfile; deploy a VPS pendiente.
 
 ---
 
 ## 7. Migraciones SQL existentes
 
-Las migraciones fueron diseñadas inicialmente para Diesel CLI (Rust), con esta estructura:
-
-```
-migrations/
-├── 2026-06-24-000001_initial_setup/
-│   ├── up.sql
-│   └── down.sql
-├── 2026-06-24-000002_users_placeholder/
-│   ├── up.sql
-│   └── down.sql
-... (12 carpetas en total)
-```
-
-**Necesitan adaptarse al formato de golang-migrate**, que es:
+Ya están en formato **golang-migrate** (un par `.up.sql`/`.down.sql` por versión, plano en
+`migrations/`) y **las 17 están aplicadas en Neon**:
 
 ```
 migrations/
 ├── 000001_initial_setup.up.sql
 ├── 000001_initial_setup.down.sql
-├── 000002_users_placeholder.up.sql
-├── 000002_users_placeholder.down.sql
 ...
+└── 000017_user_ai_settings.down.sql
 ```
 
-Las migraciones cubren (en orden):
-1. Extensions (pgcrypto, btree_gist)
-2. users (placeholder)
-3. user_settings
-4. accounts + categories
-5. tracking_periods (con EXCLUDE constraint para no-overlap)
-6. transactions (con trigger validate_transaction_period)
-7. budgets
-8. savings_goals + savings_goal_contributions
-9. recurring_transactions
-10. tracking_period_summaries + tracking_period_insights
-11. triggers updated_at (función + 10 triggers)
-12. seed system categories (20 categorías predefinidas para Colombia)
+Cubren (en orden):
+
+| # | Migración | Contenido |
+|---|---|---|
+| 000001 | initial_setup | Extensions (pgcrypto, btree_gist) |
+| 000002 | users_placeholder | users |
+| 000003 | user_settings | + CHECKs `tracking_duration BETWEEN 28 AND 31` y `tracking_start_day BETWEEN 1 AND 31` |
+| 000004 | accounts_and_categories | |
+| 000005 | tracking_periods | EXCLUDE constraint para no-solape + índice único parcial del activo |
+| 000006 | transactions | trigger `validate_transaction_period`; ya incluye las columnas `ai_*` |
+| 000007 | budgets | |
+| 000008 | savings_goals | + savings_goal_contributions |
+| 000009 | recurring_transactions | |
+| 000010 | summaries_and_insights | tracking_period_summaries + tracking_period_insights |
+| 000011 | triggers_updated_at | función + triggers `set_updated_at_*` |
+| 000012 | seed_system_categories | 20 categorías predefinidas para Colombia |
+| 000013 | auth | `users.password_hash` + tabla `refresh_tokens` |
+| 000014 | recurring_engine | soporte del motor de materialización |
+| 000015 | recurring_occurrence_date | |
+| 000016 | sync_indexes | índices para el delta sync |
+| 000017 | user_ai_settings | BYOK: key cifrada por usuario |
+
+`make migrate-version` debe reportar **17**.
 
 ---
 
