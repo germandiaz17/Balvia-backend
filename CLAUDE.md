@@ -191,10 +191,9 @@ Cosas que potencialmente podrían ser reutilizables por otros proyectos.
 - **Cierre de seguimientos (paso 11)**: `ClosePeriodTx` atómico = cierra periodo + snapshot `tracking_period_summary` (totales core: income/expense/transfer, net_savings, savings_rate, conteos, top categoría) + genera el siguiente periodo contiguo + copia budgets. **Scheduler in-process** (cada hora) + **cierre perezoso** al resolver el periodo activo. Con tests E2E.
 - **Auth (paso 12)**: JWT access token + refresh token rotado (bcrypt, tabla `refresh_tokens`, migración 000013). Endpoints `/api/v1/auth/{register,login,refresh,logout,me}`. `register` reemplaza al onboarding público (crea user+settings+periodo+tokens). Middleware `JWTAuth` protege las rutas (reemplazó al stub `X-User-ID`). Con E2E.
 
-> **Contrato de API**: `docs/API_CONTRACT.md` (fuente de verdad back⇆front) — **aún no generado**, se
-> crea al cerrar el hito actual. Mientras tanto la fuente es el vault de Obsidian
-> (`~/Documents/Balvia Brain/02 — Arquitectura/`). Cuando exista, actualízalo en el MISMO cambio en
-> que toques un endpoint. Estado/backlog: `docs/ROADMAP.md` (idem).
+> **Contrato de API**: `docs/API_CONTRACT.md` (fuente de verdad back⇆front). Actualízalo en el MISMO
+> cambio en que toques un endpoint. Estado/backlog: `docs/ROADMAP.md`. La documentación narrativa
+> vive en el vault de Obsidian (`~/Documents/Balvia Brain/`).
 
 - **CRUD de budgets (paso 13)**: `/api/v1/budgets` (Create/List/Get/Update/Delete). Atados al **periodo activo** al crear (lazy-close incluido); `category_id` opcional (null = presupuesto global); **único por (periodo, categoría)** → 409 vía `ErrBudgetExists`; umbrales de alerta 0–100 (default 80/100); presupuestos de periodos **cerrados son inmutables** (`ErrPeriodClosed`, 422) en update/delete. Hard delete (sin `deleted_at`). Con tests de servicio.
 - **IA — categorización automática (backend, BYOK multi-proveedor)**: cada usuario trae **su propia API key** (Anthropic o cualquier endpoint **OpenAI-compatible** vía `base_url`), guardada **cifrada** (AES-256-GCM). Piezas:
@@ -211,11 +210,15 @@ Cosas que potencialmente podrían ser reutilizables por otros proyectos.
 - **Subsistema de insights**: 16 tipos — 7 "during" (`analytics_during.go`, recalculados best-effort al crear transacción y de forma perezosa al consultar) y 9 "final" (`analytics.go`, generados e inmutables al cierre). Expuestos en `GET /tracking-periods/:id/insights`, polimórfico por estado del periodo. 37 tests entre ambos generadores.
 - **Motor de sync offline-first**: `GET /api/v1/sync/pull` (delta por cursor `since`, paginado, 8 entidades, soft-deletes) + `POST /api/v1/sync/push` (por lotes, idempotente por `client_id`, rechazo por ítem). ⚠️ El push **solo soporta `entity_type: "transaction"`**; las demás constantes existen pero caen en `rejected`.
 
+- **Configuración del usuario**: `GET/PUT /api/v1/settings` (recurso singleton). Update **parcial** vía `COALESCE(sqlc.narg(...), columna)` — una clave ausente deja la columna intacta. Valida rangos (28–31, 1–31) y enums (theme, period view, currency 3 letras mayúsculas) **antes** de la BD, así que un CHECK de Postgres nunca aflora como 500. Devuelve `applies_to_next_period` + `active_period_end_date` para que la app diga la fecha exacta en que aplica el cambio. Sin migración nueva. Con tests.
+
 ### 🔄 En progreso
-- **Cerrar el MVP de producto**: UI móvil de metas y recurrentes (backend listo, sin pantallas) + `GET/PUT /api/v1/settings` para que el usuario pueda editar la duración de su seguimiento.
+- Nada. El hito "cerrar el MVP de producto" quedó cerrado el 2026-08-01 (metas + recurrentes en móvil + `/settings`).
 
 ### ⏭️ Próximos pasos / pendientes conocidos
-- **`GET/PUT /api/v1/settings`**: `user_settings` solo tiene `Create` y `Get` en sqlc — sin `UPDATE`, sin service, sin endpoint. El usuario **no puede cambiar `tracking_duration_days`** tras registrarse, lo que deja la regla 8 (sección 3) sin camino de entrada.
+
+Detalle completo en `docs/ROADMAP.md`.
+
 - **`/sync/push` multi-entidad**: hoy solo transactions. Bloquea que cuentas, categorías, presupuestos, metas y recurrentes se puedan mutar offline (el pull sí las trae → asimetría).
 - **`tracking_start_day` es inerte**: `ClosePeriodTx` genera el siguiente periodo como `fin_anterior + 1 día` y solo estampa el valor como metadata. Hacer real el ancla de día del mes exige absorber el desfase en la duración (el CHECK 28–31 solo permite ±3 días/ciclo) → hito propio.
 - **Breakdowns JSONB ricos del summary**: faltan `expense_by_day` y `budget_performance` en `tracking_period_summaries`.
