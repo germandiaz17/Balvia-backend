@@ -28,6 +28,12 @@ type CreateTransactionInput struct {
 	TransactionDate   *time.Time
 	TransferAccountID *uuid.UUID
 	ClientID          *string
+
+	// AI categorization metadata (optional). Set when the category came from an
+	// AI suggestion the user accepted; used to track model accuracy.
+	AICategorized         bool
+	AIConfidence          *decimal.Decimal
+	AISuggestedCategoryID *uuid.UUID
 }
 
 // TransactionService implements the transaction business rules, all anchored to
@@ -96,19 +102,30 @@ func (s *TransactionService) Create(ctx context.Context, userID uuid.UUID, in Cr
 	}
 
 	return s.store.CreateTransactionTx(ctx, sqlc.CreateTransactionParams{
-		UserID:            userID,
-		TrackingPeriodID:  period.ID,
-		AccountID:         in.AccountID,
-		CategoryID:        category,
-		TransactionType:   in.TransactionType,
-		Amount:            in.Amount,
-		Currency:          currency,
-		Description:       in.Description,
-		Notes:             in.Notes,
-		TransactionDate:   pgtype.Date{Time: txnDay, Valid: true},
-		TransferAccountID: transferAccount,
-		ClientID:          in.ClientID,
+		UserID:                userID,
+		TrackingPeriodID:      period.ID,
+		AccountID:             in.AccountID,
+		CategoryID:            category,
+		TransactionType:       in.TransactionType,
+		Amount:                in.Amount,
+		Currency:              currency,
+		Description:           in.Description,
+		Notes:                 in.Notes,
+		TransactionDate:       pgtype.Date{Time: txnDay, Valid: true},
+		TransferAccountID:     transferAccount,
+		ClientID:              in.ClientID,
+		AiCategorized:         in.AICategorized,
+		AiConfidence:          decimalPtrToNull(in.AIConfidence),
+		AiSuggestedCategoryID: ptrToNullUUID(in.AISuggestedCategoryID),
 	})
+}
+
+// decimalPtrToNull converts an optional decimal into sqlc's NullDecimal.
+func decimalPtrToNull(d *decimal.Decimal) decimal.NullDecimal {
+	if d == nil {
+		return decimal.NullDecimal{}
+	}
+	return decimal.NullDecimal{Decimal: *d, Valid: true}
 }
 
 // Get returns a single non-deleted transaction owned by the user.

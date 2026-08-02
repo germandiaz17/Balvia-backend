@@ -28,7 +28,10 @@ INSERT INTO transactions (
     transfer_account_id,
     client_id,
     recurring_transaction_id,
-    occurrence_date
+    occurrence_date,
+    ai_categorized,
+    ai_confidence,
+    ai_suggested_category_id
 ) VALUES (
     $1,
     $2,
@@ -43,26 +46,32 @@ INSERT INTO transactions (
     $11,
     $12,
     $13,
-    $14
+    $14,
+    $15,
+    $16,
+    $17
 )
 RETURNING id, user_id, tracking_period_id, account_id, category_id, transaction_type, amount, currency, description, notes, transaction_date, transfer_account_id, ai_categorized, ai_confidence, ai_suggested_category_id, voice_input, raw_voice_text, location_lat, location_lng, client_id, synced_at, created_at, updated_at, deleted_at, recurring_transaction_id, occurrence_date
 `
 
 type CreateTransactionParams struct {
-	UserID                 uuid.UUID       `json:"user_id"`
-	TrackingPeriodID       uuid.UUID       `json:"tracking_period_id"`
-	AccountID              uuid.UUID       `json:"account_id"`
-	CategoryID             uuid.NullUUID   `json:"category_id"`
-	TransactionType        string          `json:"transaction_type"`
-	Amount                 decimal.Decimal `json:"amount"`
-	Currency               string          `json:"currency"`
-	Description            *string         `json:"description"`
-	Notes                  *string         `json:"notes"`
-	TransactionDate        pgtype.Date     `json:"transaction_date"`
-	TransferAccountID      uuid.NullUUID   `json:"transfer_account_id"`
-	ClientID               *string         `json:"client_id"`
-	RecurringTransactionID uuid.NullUUID   `json:"recurring_transaction_id"`
-	OccurrenceDate         pgtype.Date     `json:"occurrence_date"`
+	UserID                 uuid.UUID           `json:"user_id"`
+	TrackingPeriodID       uuid.UUID           `json:"tracking_period_id"`
+	AccountID              uuid.UUID           `json:"account_id"`
+	CategoryID             uuid.NullUUID       `json:"category_id"`
+	TransactionType        string              `json:"transaction_type"`
+	Amount                 decimal.Decimal     `json:"amount"`
+	Currency               string              `json:"currency"`
+	Description            *string             `json:"description"`
+	Notes                  *string             `json:"notes"`
+	TransactionDate        pgtype.Date         `json:"transaction_date"`
+	TransferAccountID      uuid.NullUUID       `json:"transfer_account_id"`
+	ClientID               *string             `json:"client_id"`
+	RecurringTransactionID uuid.NullUUID       `json:"recurring_transaction_id"`
+	OccurrenceDate         pgtype.Date         `json:"occurrence_date"`
+	AiCategorized          bool                `json:"ai_categorized"`
+	AiConfidence           decimal.NullDecimal `json:"ai_confidence"`
+	AiSuggestedCategoryID  uuid.NullUUID       `json:"ai_suggested_category_id"`
 }
 
 func (q *Queries) CreateTransaction(ctx context.Context, arg CreateTransactionParams) (Transaction, error) {
@@ -81,6 +90,9 @@ func (q *Queries) CreateTransaction(ctx context.Context, arg CreateTransactionPa
 		arg.ClientID,
 		arg.RecurringTransactionID,
 		arg.OccurrenceDate,
+		arg.AiCategorized,
+		arg.AiConfidence,
+		arg.AiSuggestedCategoryID,
 	)
 	var i Transaction
 	err := row.Scan(

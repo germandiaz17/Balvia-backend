@@ -13,7 +13,10 @@ INSERT INTO transactions (
     transfer_account_id,
     client_id,
     recurring_transaction_id,
-    occurrence_date
+    occurrence_date,
+    ai_categorized,
+    ai_confidence,
+    ai_suggested_category_id
 ) VALUES (
     sqlc.arg(user_id),
     sqlc.arg(tracking_period_id),
@@ -28,7 +31,10 @@ INSERT INTO transactions (
     sqlc.narg(transfer_account_id),
     sqlc.narg(client_id),
     sqlc.narg(recurring_transaction_id),
-    sqlc.narg(occurrence_date)
+    sqlc.narg(occurrence_date),
+    sqlc.arg(ai_categorized),
+    sqlc.narg(ai_confidence),
+    sqlc.narg(ai_suggested_category_id)
 )
 RETURNING *;
 

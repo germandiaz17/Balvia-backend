@@ -46,6 +46,11 @@ type createTxnRequest struct {
 	TransactionDate   *string    `json:"transaction_date" validate:"omitempty,datetime=2006-01-02"`
 	TransferAccountID *uuid.UUID `json:"transfer_account_id"`
 	ClientID          *string    `json:"client_id" validate:"omitempty,max=100"`
+
+	// AI categorization metadata (optional; only honored on Create).
+	AICategorized         bool       `json:"ai_categorized"`
+	AIConfidence          *string    `json:"ai_confidence" validate:"omitempty"`
+	AISuggestedCategoryID *uuid.UUID `json:"ai_suggested_category_id"`
 }
 
 // Create handles POST /transactions.
@@ -77,23 +82,43 @@ func (h *TransactionHandler) Create(c *fiber.Ctx) error {
 		txnDate = &d
 	}
 
+	aiConfidence, err := parseConfidence(req.AIConfidence)
+	if err != nil {
+		return fiber.NewError(fiber.StatusBadRequest, "invalid ai_confidence")
+	}
+
 	txn, err := h.svc.Create(c.Context(), userID, services.CreateTransactionInput{
-		AccountID:         req.AccountID,
-		TransactionType:   req.TransactionType,
-		Amount:            amount,
-		Currency:          req.Currency,
-		CategoryID:        req.CategoryID,
-		Description:       req.Description,
-		Notes:             req.Notes,
-		TransactionDate:   txnDate,
-		TransferAccountID: req.TransferAccountID,
-		ClientID:          req.ClientID,
+		AccountID:             req.AccountID,
+		TransactionType:       req.TransactionType,
+		Amount:                amount,
+		Currency:              req.Currency,
+		CategoryID:            req.CategoryID,
+		Description:           req.Description,
+		Notes:                 req.Notes,
+		TransactionDate:       txnDate,
+		TransferAccountID:     req.TransferAccountID,
+		ClientID:              req.ClientID,
+		AICategorized:         req.AICategorized,
+		AIConfidence:          aiConfidence,
+		AISuggestedCategoryID: req.AISuggestedCategoryID,
 	})
 	if err != nil {
 		return mapDomainError(err)
 	}
 
 	return c.Status(fiber.StatusCreated).JSON(toTransactionResponse(txn))
+}
+
+// parseConfidence turns an optional wire string (e.g. "0.87") into a decimal.
+func parseConfidence(s *string) (*decimal.Decimal, error) {
+	if s == nil || *s == "" {
+		return nil, nil
+	}
+	d, err := decimal.NewFromString(*s)
+	if err != nil {
+		return nil, err
+	}
+	return &d, nil
 }
 
 // Update handles PUT /transactions/:id.
@@ -224,24 +249,35 @@ type transactionResponse struct {
 	TransferAccountID *uuid.UUID `json:"transfer_account_id,omitempty"`
 	ClientID          *string    `json:"client_id,omitempty"`
 	CreatedAt         string     `json:"created_at"`
+
+	AICategorized         bool       `json:"ai_categorized"`
+	AIConfidence          *string    `json:"ai_confidence,omitempty"`
+	AISuggestedCategoryID *uuid.UUID `json:"ai_suggested_category_id,omitempty"`
 }
 
 func toTransactionResponse(t sqlc.Transaction) transactionResponse {
-	return transactionResponse{
-		ID:                t.ID,
-		TrackingPeriodID:  t.TrackingPeriodID,
-		AccountID:         t.AccountID,
-		CategoryID:        nullUUIDToPtr(t.CategoryID),
-		TransactionType:   t.TransactionType,
-		Amount:            t.Amount.String(),
-		Currency:          t.Currency,
-		Description:       t.Description,
-		Notes:             t.Notes,
-		TransactionDate:   t.TransactionDate.Time.Format(dateLayout),
-		TransferAccountID: nullUUIDToPtr(t.TransferAccountID),
-		ClientID:          t.ClientID,
-		CreatedAt:         t.CreatedAt.Time.Format(time.RFC3339),
+	r := transactionResponse{
+		ID:                    t.ID,
+		TrackingPeriodID:      t.TrackingPeriodID,
+		AccountID:             t.AccountID,
+		CategoryID:            nullUUIDToPtr(t.CategoryID),
+		TransactionType:       t.TransactionType,
+		Amount:                t.Amount.String(),
+		Currency:              t.Currency,
+		Description:           t.Description,
+		Notes:                 t.Notes,
+		TransactionDate:       t.TransactionDate.Time.Format(dateLayout),
+		TransferAccountID:     nullUUIDToPtr(t.TransferAccountID),
+		ClientID:              t.ClientID,
+		CreatedAt:             t.CreatedAt.Time.Format(time.RFC3339),
+		AICategorized:         t.AiCategorized,
+		AISuggestedCategoryID: nullUUIDToPtr(t.AiSuggestedCategoryID),
 	}
+	if t.AiConfidence.Valid {
+		s := t.AiConfidence.Decimal.String()
+		r.AIConfidence = &s
+	}
+	return r
 }
 
 func nullUUIDToPtr(n uuid.NullUUID) *uuid.UUID {

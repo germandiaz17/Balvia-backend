@@ -207,6 +207,10 @@ type syncTransactionResponse struct {
 	CreatedAt         string     `json:"created_at"`
 	UpdatedAt         string     `json:"updated_at"`
 	DeletedAt         *string    `json:"deleted_at,omitempty"`
+
+	AICategorized         bool       `json:"ai_categorized"`
+	AIConfidence          *string    `json:"ai_confidence,omitempty"`
+	AISuggestedCategoryID *uuid.UUID `json:"ai_suggested_category_id,omitempty"`
 }
 
 type syncAccountResponse struct {
@@ -408,21 +412,27 @@ func toSyncPullResponse(r services.PullResult) syncPullResponse {
 
 func toSyncTransactionResponse(t sqlc.Transaction) syncTransactionResponse {
 	r := syncTransactionResponse{
-		ID:                t.ID,
-		UserID:            t.UserID,
-		TrackingPeriodID:  t.TrackingPeriodID,
-		AccountID:         t.AccountID,
-		CategoryID:        nullUUIDToPtr(t.CategoryID),
-		TransactionType:   t.TransactionType,
-		Amount:            t.Amount.String(),
-		Currency:          t.Currency,
-		Description:       t.Description,
-		Notes:             t.Notes,
-		TransactionDate:   t.TransactionDate.Time.Format(dateLayout),
-		TransferAccountID: nullUUIDToPtr(t.TransferAccountID),
-		ClientID:          t.ClientID,
-		CreatedAt:         t.CreatedAt.Time.UTC().Format(time.RFC3339),
-		UpdatedAt:         t.UpdatedAt.Time.UTC().Format(time.RFC3339),
+		ID:                    t.ID,
+		UserID:                t.UserID,
+		TrackingPeriodID:      t.TrackingPeriodID,
+		AccountID:             t.AccountID,
+		CategoryID:            nullUUIDToPtr(t.CategoryID),
+		TransactionType:       t.TransactionType,
+		Amount:                t.Amount.String(),
+		Currency:              t.Currency,
+		Description:           t.Description,
+		Notes:                 t.Notes,
+		TransactionDate:       t.TransactionDate.Time.Format(dateLayout),
+		TransferAccountID:     nullUUIDToPtr(t.TransferAccountID),
+		ClientID:              t.ClientID,
+		CreatedAt:             t.CreatedAt.Time.UTC().Format(time.RFC3339),
+		UpdatedAt:             t.UpdatedAt.Time.UTC().Format(time.RFC3339),
+		AICategorized:         t.AiCategorized,
+		AISuggestedCategoryID: nullUUIDToPtr(t.AiSuggestedCategoryID),
+	}
+	if t.AiConfidence.Valid {
+		s := t.AiConfidence.Decimal.String()
+		r.AIConfidence = &s
 	}
 	if t.DeletedAt.Valid {
 		s := t.DeletedAt.Time.UTC().Format(time.RFC3339)

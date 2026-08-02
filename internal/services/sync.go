@@ -145,6 +145,11 @@ type PushTransactionPayload struct {
 	TransactionDate   *string    `json:"transaction_date,omitempty"`
 	TransferAccountID *uuid.UUID `json:"transfer_account_id,omitempty"`
 	ClientID          *string    `json:"client_id,omitempty"`
+
+	// AI categorization metadata (optional).
+	AICategorized         bool       `json:"ai_categorized,omitempty"`
+	AIConfidence          *string    `json:"ai_confidence,omitempty"`
+	AISuggestedCategoryID *uuid.UUID `json:"ai_suggested_category_id,omitempty"`
 }
 
 // ItemStatus describes the outcome of a single push item.
@@ -523,17 +528,29 @@ func txnPayloadToInput(p *PushTransactionPayload) (CreateTransactionInput, error
 		txnDate = &d
 	}
 
+	var aiConfidence *decimal.Decimal
+	if p.AIConfidence != nil && *p.AIConfidence != "" {
+		conf, err := decimal.NewFromString(*p.AIConfidence)
+		if err != nil {
+			return CreateTransactionInput{}, errors.New("invalid ai_confidence")
+		}
+		aiConfidence = &conf
+	}
+
 	return CreateTransactionInput{
-		AccountID:         p.AccountID,
-		TransactionType:   p.TransactionType,
-		Amount:            amount,
-		Currency:          p.Currency,
-		CategoryID:        p.CategoryID,
-		Description:       p.Description,
-		Notes:             p.Notes,
-		TransactionDate:   txnDate,
-		TransferAccountID: p.TransferAccountID,
-		ClientID:          p.ClientID,
+		AccountID:             p.AccountID,
+		TransactionType:       p.TransactionType,
+		Amount:                amount,
+		Currency:              p.Currency,
+		CategoryID:            p.CategoryID,
+		Description:           p.Description,
+		Notes:                 p.Notes,
+		TransactionDate:       txnDate,
+		TransferAccountID:     p.TransferAccountID,
+		ClientID:              p.ClientID,
+		AICategorized:         p.AICategorized,
+		AIConfidence:          aiConfidence,
+		AISuggestedCategoryID: p.AISuggestedCategoryID,
 	}, nil
 }
 
