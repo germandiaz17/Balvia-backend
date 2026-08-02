@@ -92,3 +92,61 @@ func (q *Queries) GetUserSettingsByUserID(ctx context.Context, userID uuid.UUID)
 	)
 	return i, err
 }
+
+const updateUserSettings = `-- name: UpdateUserSettings :one
+UPDATE user_settings
+SET tracking_start_day     = COALESCE($1,     tracking_start_day),
+    tracking_duration_days = COALESCE($2, tracking_duration_days),
+    default_currency       = COALESCE($3,       default_currency),
+    locale                 = COALESCE($4,                 locale),
+    theme                  = COALESCE($5,                  theme),
+    default_period_view    = COALESCE($6,    default_period_view)
+WHERE user_id = $7
+RETURNING id, user_id, tracking_start_day, tracking_duration_days, default_currency, country_code, locale, theme, default_period_view, subscription_tier, created_at, updated_at
+`
+
+type UpdateUserSettingsParams struct {
+	TrackingStartDay     *int16    `json:"tracking_start_day"`
+	TrackingDurationDays *int16    `json:"tracking_duration_days"`
+	DefaultCurrency      *string   `json:"default_currency"`
+	Locale               *string   `json:"locale"`
+	Theme                *string   `json:"theme"`
+	DefaultPeriodView    *string   `json:"default_period_view"`
+	UserID               uuid.UUID `json:"user_id"`
+}
+
+// Partial update: every field is nullable, and a NULL argument leaves the
+// column untouched. updated_at is handled by the set_updated_at_user_settings
+// trigger. country_code and subscription_tier are deliberately not editable
+// here (the tier is server-controlled).
+//
+// Changing tracking_duration_days does NOT touch the active tracking period:
+// ClosePeriodTx re-reads these settings at close time, so the new duration
+// applies to the NEXT period. See UserSettingsService.Update.
+func (q *Queries) UpdateUserSettings(ctx context.Context, arg UpdateUserSettingsParams) (UserSetting, error) {
+	row := q.db.QueryRow(ctx, updateUserSettings,
+		arg.TrackingStartDay,
+		arg.TrackingDurationDays,
+		arg.DefaultCurrency,
+		arg.Locale,
+		arg.Theme,
+		arg.DefaultPeriodView,
+		arg.UserID,
+	)
+	var i UserSetting
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.TrackingStartDay,
+		&i.TrackingDurationDays,
+		&i.DefaultCurrency,
+		&i.CountryCode,
+		&i.Locale,
+		&i.Theme,
+		&i.DefaultPeriodView,
+		&i.SubscriptionTier,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}

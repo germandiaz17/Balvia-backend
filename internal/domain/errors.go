@@ -76,4 +76,12 @@ var (
 	// ErrAIUpstream is returned when the user's AI provider rejected or failed the
 	// request (e.g. an invalid API key, rate limit, or provider outage).
 	ErrAIUpstream = errors.New("ai provider request failed")
+
+	// ErrInvalidTrackingConfig is returned when the tracking configuration is out
+	// of the ranges the schema allows: start day 1-31, duration 28-31.
+	ErrInvalidTrackingConfig = errors.New("invalid tracking configuration")
+
+	// ErrInvalidSettings is returned when a user preference is not one of the
+	// values the schema allows (theme, default_period_view, currency).
+	ErrInvalidSettings = errors.New("invalid user settings value")
 )

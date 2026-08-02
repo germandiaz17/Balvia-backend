@@ -166,6 +166,15 @@ type Querier interface {
 	// tracking_period_id is intentionally NOT updatable (a transaction stays in its
 	// period). The validate_transaction_period trigger re-checks date/period here.
 	UpdateTransaction(ctx context.Context, arg UpdateTransactionParams) (Transaction, error)
+	// Partial update: every field is nullable, and a NULL argument leaves the
+	// column untouched. updated_at is handled by the set_updated_at_user_settings
+	// trigger. country_code and subscription_tier are deliberately not editable
+	// here (the tier is server-controlled).
+	//
+	// Changing tracking_duration_days does NOT touch the active tracking period:
+	// ClosePeriodTx re-reads these settings at close time, so the new duration
+	// applies to the NEXT period. See UserSettingsService.Update.
+	UpdateUserSettings(ctx context.Context, arg UpdateUserSettingsParams) (UserSetting, error)
 	UpsertUserAISettings(ctx context.Context, arg UpsertUserAISettingsParams) (UserAiSetting, error)
 }
 

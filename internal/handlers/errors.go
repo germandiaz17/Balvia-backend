@@ -36,7 +36,9 @@ func mapDomainError(err error) error {
 		errors.Is(err, domain.ErrInvalidFrequency),
 		errors.Is(err, domain.ErrInvalidRecurringConfig),
 		errors.Is(err, domain.ErrAINotConfigured),
-		errors.Is(err, domain.ErrInvalidAIProvider):
+		errors.Is(err, domain.ErrInvalidAIProvider),
+		errors.Is(err, domain.ErrInvalidTrackingConfig),
+		errors.Is(err, domain.ErrInvalidSettings):
 		return fiber.NewError(fiber.StatusUnprocessableEntity, err.Error())
 	case errors.Is(err, domain.ErrAIUnavailable):
 		return fiber.NewError(fiber.StatusServiceUnavailable, err.Error())

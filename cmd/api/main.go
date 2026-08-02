@@ -85,6 +85,7 @@ func main() {
 	budgetHandler := handlers.NewBudgetHandler(services.NewBudgetService(store), validate)
 	trackingPeriodHandler := handlers.NewTrackingPeriodHandler(services.NewPeriodQueryService(store), validate)
 	savingsGoalHandler := handlers.NewSavingsGoalHandler(services.NewSavingsGoalService(store), validate)
+	userSettingsHandler := handlers.NewUserSettingsHandler(services.NewUserSettingsService(store), validate)
 
 	periodSvc := services.NewPeriodService(store, log)
 	recurringEngineSvc := services.NewRecurringEngineService(store, log)
@@ -126,6 +127,7 @@ func main() {
 	budgetHandler.Register(authed)
 	trackingPeriodHandler.Register(authed)
 	savingsGoalHandler.Register(authed)
+	userSettingsHandler.Register(authed)
 	recurringHandler.Register(authed)
 	syncHandler.Register(authed)
 	aiHandler.Register(authed)
