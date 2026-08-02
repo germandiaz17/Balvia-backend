@@ -34,8 +34,14 @@ func mapDomainError(err error) error {
 		errors.Is(err, domain.ErrInvalidThreshold),
 		errors.Is(err, domain.ErrInvalidGoalDates),
 		errors.Is(err, domain.ErrInvalidFrequency),
-		errors.Is(err, domain.ErrInvalidRecurringConfig):
+		errors.Is(err, domain.ErrInvalidRecurringConfig),
+		errors.Is(err, domain.ErrAINotConfigured),
+		errors.Is(err, domain.ErrInvalidAIProvider):
 		return fiber.NewError(fiber.StatusUnprocessableEntity, err.Error())
+	case errors.Is(err, domain.ErrAIUnavailable):
+		return fiber.NewError(fiber.StatusServiceUnavailable, err.Error())
+	case errors.Is(err, domain.ErrAIUpstream):
+		return fiber.NewError(fiber.StatusBadGateway, err.Error())
 	default:
 		return err
 	}

@@ -222,6 +222,18 @@ type User struct {
 	PasswordHash *string            `json:"password_hash"`
 }
 
+type UserAiSetting struct {
+	ID              uuid.UUID          `json:"id"`
+	UserID          uuid.UUID          `json:"user_id"`
+	Provider        string             `json:"provider"`
+	ApiKeyEncrypted []byte             `json:"api_key_encrypted"`
+	BaseUrl         *string            `json:"base_url"`
+	Model           *string            `json:"model"`
+	Enabled         bool               `json:"enabled"`
+	CreatedAt       pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt       pgtype.Timestamptz `json:"updated_at"`
+}
+
 type UserSetting struct {
 	ID                   uuid.UUID          `json:"id"`
 	UserID               uuid.UUID          `json:"user_id"`

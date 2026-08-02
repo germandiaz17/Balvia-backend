@@ -3,6 +3,7 @@
 package config
 
 import (
+	"encoding/hex"
 	"fmt"
 	"os"
 	"strings"
@@ -22,6 +23,10 @@ type Config struct {
 	LogLevel string
 	// JWTSecret signs and verifies access tokens (HMAC). Required.
 	JWTSecret string
+	// AIEncryptionKey (32 bytes) encrypts user-supplied AI API keys at rest
+	// (AES-256-GCM). Optional: when empty, AI features return 503 and the rest of
+	// the app runs normally. Set AI_ENCRYPTION_KEY to 64 hex chars.
+	AIEncryptionKey []byte
 }
 
 // IsProduction reports whether the app runs in a production-like environment.
@@ -52,6 +57,15 @@ func Load() (Config, error) {
 	}
 	if strings.TrimSpace(cfg.JWTSecret) == "" {
 		return Config{}, fmt.Errorf("config: JWT_SECRET is required")
+	}
+
+	// AI_ENCRYPTION_KEY is optional; if present it must decode to exactly 32 bytes.
+	if raw := getEnv("AI_ENCRYPTION_KEY", ""); raw != "" {
+		key, err := hex.DecodeString(raw)
+		if err != nil || len(key) != 32 {
+			return Config{}, fmt.Errorf("config: AI_ENCRYPTION_KEY must be 64 hex chars (32 bytes)")
+		}
+		cfg.AIEncryptionKey = key
 	}
 
 	return cfg, nil

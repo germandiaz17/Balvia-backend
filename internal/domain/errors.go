@@ -60,4 +60,20 @@ var (
 	// fields violates a business rule (e.g. custom without custom_interval_days,
 	// day ranges out of bounds, end_date not after start_date, invalid transaction type).
 	ErrInvalidRecurringConfig = errors.New("invalid recurring transaction configuration")
+
+	// ErrAIUnavailable is returned when AI features are requested but AI encryption
+	// is not configured on the server (no AI_ENCRYPTION_KEY).
+	ErrAIUnavailable = errors.New("ai service is unavailable")
+
+	// ErrAINotConfigured is returned when the user has not set up their own AI
+	// provider/key yet (BYOK).
+	ErrAINotConfigured = errors.New("no ai provider configured for this user")
+
+	// ErrInvalidAIProvider is returned when the requested AI provider or its
+	// settings are invalid.
+	ErrInvalidAIProvider = errors.New("invalid ai provider or api key")
+
+	// ErrAIUpstream is returned when the user's AI provider rejected or failed the
+	// request (e.g. an invalid API key, rate limit, or provider outage).
+	ErrAIUpstream = errors.New("ai provider request failed")
 )

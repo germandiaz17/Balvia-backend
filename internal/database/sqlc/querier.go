@@ -51,6 +51,7 @@ type Querier interface {
 	// vs_previous_partial, goal_progress_alert) are preserved until the next
 	// lazy refresh via GET /tracking-periods/:id/insights.
 	DeleteImmediateDuringInsightsByPeriod(ctx context.Context, arg DeleteImmediateDuringInsightsByPeriodParams) error
+	DeleteUserAISettings(ctx context.Context, userID uuid.UUID) error
 	ExpenseByAccount(ctx context.Context, trackingPeriodID uuid.UUID) ([]ExpenseByAccountRow, error)
 	// Groups expense transactions in the period by category. Returns category_id
 	// (nullable), category name (nullable — NULL when uncategorized), and total.
@@ -80,6 +81,7 @@ type Querier interface {
 	GetTransaction(ctx context.Context, arg GetTransactionParams) (Transaction, error)
 	// Used by push to detect duplicates already committed by a previous push.
 	GetTransactionByClientID(ctx context.Context, arg GetTransactionByClientIDParams) (Transaction, error)
+	GetUserAISettings(ctx context.Context, userID uuid.UUID) (UserAiSetting, error)
 	GetUserByEmail(ctx context.Context, email string) (User, error)
 	GetUserByID(ctx context.Context, id uuid.UUID) (User, error)
 	GetUserSettingsByUserID(ctx context.Context, userID uuid.UUID) (UserSetting, error)
@@ -164,6 +166,7 @@ type Querier interface {
 	// tracking_period_id is intentionally NOT updatable (a transaction stays in its
 	// period). The validate_transaction_period trigger re-checks date/period here.
 	UpdateTransaction(ctx context.Context, arg UpdateTransactionParams) (Transaction, error)
+	UpsertUserAISettings(ctx context.Context, arg UpsertUserAISettingsParams) (UserAiSetting, error)
 }
 
 var _ Querier = (*Queries)(nil)

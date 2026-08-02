@@ -15,8 +15,10 @@ import (
 	"github.com/gofiber/fiber/v2/middleware/requestid"
 	"github.com/rs/zerolog"
 
+	"github.com/germandiaz17/Balvia-backend/internal/ai"
 	"github.com/germandiaz17/Balvia-backend/internal/auth"
 	"github.com/germandiaz17/Balvia-backend/internal/config"
+	appcrypto "github.com/germandiaz17/Balvia-backend/internal/crypto"
 	"github.com/germandiaz17/Balvia-backend/internal/database"
 	"github.com/germandiaz17/Balvia-backend/internal/handlers"
 	"github.com/germandiaz17/Balvia-backend/internal/middleware"
@@ -92,6 +94,26 @@ func main() {
 	syncSvc := services.NewSyncService(store, transactionSvc, log)
 	syncHandler := handlers.NewSyncHandler(syncSvc)
 
+	// AI features (BYOK — bring your own key). Each user supplies their own provider
+	// key, stored encrypted with AI_ENCRYPTION_KEY. When that key is absent,
+	// encryption is unavailable and /ai/* returns 503.
+	var aiEnc ai.Encrypter
+	var aiDec ai.Decrypter
+	if len(cfg.AIEncryptionKey) > 0 {
+		box, err := appcrypto.NewAESGCM(cfg.AIEncryptionKey)
+		if err != nil {
+			log.Fatal().Err(err).Msg("failed to init AI encryption")
+		}
+		aiEnc, aiDec = box, box
+	} else {
+		log.Warn().Msg("AI_ENCRYPTION_KEY not set — AI features disabled (/ai/* returns 503)")
+	}
+	aiHandler := handlers.NewAIHandler(
+		ai.NewService(store, aiDec),
+		ai.NewSettingsService(store, aiEnc),
+		validate,
+	)
+
 	api := app.Group("/api/v1")
 	// Public routes (no token required).
 	authHandler.RegisterPublic(api)
@@ -106,6 +128,7 @@ func main() {
 	savingsGoalHandler.Register(authed)
 	recurringHandler.Register(authed)
 	syncHandler.Register(authed)
+	aiHandler.Register(authed)
 
 	// Liveness: is the process up? (no external dependencies)
 	app.Get("/health", func(c *fiber.Ctx) error {
