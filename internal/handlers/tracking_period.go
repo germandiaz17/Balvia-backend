@@ -298,8 +298,12 @@ func (h *TrackingPeriodHandler) Summary(c *fiber.Ctx) error {
 }
 
 // Insights handles GET /tracking-periods/:id/insights.
-// Returns the "final" insights generated at close time. Empty array when the
-// period is still active or no insights have been generated yet.
+// The response is polymorphic by period status (decided in the service):
+//   - active period → lazily recomputes and returns the "during" insights
+//     (spending_pace, budget alerts, etc.).
+//   - closed period → returns the immutable "final" insights generated at close.
+//
+// Returns an empty array when no insights have been generated yet.
 func (h *TrackingPeriodHandler) Insights(c *fiber.Ctx) error {
 	userID, ok := middleware.UserID(c)
 	if !ok {
