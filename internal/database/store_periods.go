@@ -27,8 +27,10 @@ type ClosePeriodResult struct {
 // ClosePeriodTx implements Store. In a single transaction it:
 //  1. marks the period closed (only if currently active),
 //  2. snapshots a summary (core financial aggregates + JSONB breakdowns),
-//  3. generates the next contiguous period (start = closed end + 1 day),
-//  4. copies the closed period's budgets onto the new period,
+//  3. generates the next contiguous period, shaped by the user's current mode
+//     (rolling block or calendar month — see domain.NextPeriodRange),
+//  4. copies the closed period's budgets onto the new period, prorated if
+//     exactly one of the two is a transition bridge,
 //  5. generates all 9 "final" insights (idempotent: skipped if already exist).
 func (s *SQLStore) ClosePeriodTx(ctx context.Context, periodID, userID uuid.UUID) (ClosePeriodResult, error) {
 	var res ClosePeriodResult
@@ -56,16 +58,24 @@ func (s *SQLStore) ClosePeriodTx(ctx context.Context, periodID, userID uuid.UUID
 			return fmt.Errorf("load settings: %w", err)
 		}
 
-		start := closed.EndDate.Time.AddDate(0, 0, 1)
-		end := start.AddDate(0, 0, int(settings.TrackingDurationDays)-1)
+		// The mode and duration are read here, at close time, so a settings
+		// change only ever shapes the period being born — never the one the user
+		// just lived through. See UserSettingsService.
+		rng := domain.NextPeriodRange(
+			closed.EndDate.Time,
+			settings.TrackingPeriodMode,
+			int(settings.TrackingDurationDays),
+		)
 		next, err := q.CreateTrackingPeriod(ctx, sqlc.CreateTrackingPeriodParams{
 			UserID:             userID,
-			StartDate:          pgtype.Date{Time: start, Valid: true},
-			EndDate:            pgtype.Date{Time: end, Valid: true},
+			StartDate:          pgtype.Date{Time: rng.Start, Valid: true},
+			EndDate:            pgtype.Date{Time: rng.End, Valid: true},
 			Status:             "active",
 			SequenceNumber:     closed.SequenceNumber + 1,
 			ConfigStartDay:     settings.TrackingStartDay,
 			ConfigDurationDays: settings.TrackingDurationDays,
+			ConfigPeriodMode:   settings.TrackingPeriodMode,
+			IsTransition:       rng.IsTransition,
 		})
 		if err != nil {
 			return fmt.Errorf("create next period: %w", err)
@@ -77,12 +87,13 @@ func (s *SQLStore) ClosePeriodTx(ctx context.Context, periodID, userID uuid.UUID
 		if err != nil {
 			return fmt.Errorf("list budgets: %w", err)
 		}
+		proration := budgetProrationFactor(closed, next)
 		for _, b := range budgets {
 			if _, err := q.CreateBudget(ctx, sqlc.CreateBudgetParams{
 				UserID:                 userID,
 				TrackingPeriodID:       next.ID,
 				CategoryID:             b.CategoryID,
-				Amount:                 b.Amount,
+				Amount:                 prorateAmount(b.Amount, proration),
 				Currency:               b.Currency,
 				AlertThresholdWarning:  b.AlertThresholdWarning,
 				AlertThresholdCritical: b.AlertThresholdCritical,
@@ -208,12 +219,20 @@ func collectClosePeriodData(
 	// Previous period summary (optional — used for vs_previous_final).
 	// pgx.ErrNoRows is expected for period #1 or when the previous period has
 	// no summary; in that case PrevSummary stays nil and the generator skips.
+	//
+	// It is also left nil when either side is a transition bridge: the insight
+	// compares raw totals with no per-day normalisation, so measuring a 20-day
+	// bridge against a full month would announce a spending drop the user never
+	// made. Skipping beats lying.
 	prevPeriod, err := q.GetPreviousTrackingPeriod(ctx, sqlc.GetPreviousTrackingPeriodParams{
 		UserID:         userID,
 		SequenceNumber: period.SequenceNumber,
 	})
 	switch {
 	case err == nil:
+		if period.IsTransition || prevPeriod.IsTransition {
+			break
+		}
 		prevSummary, err := q.GetTrackingPeriodSummaryForPeriod(ctx, prevPeriod.ID)
 		switch {
 		case err == nil:
@@ -523,4 +542,51 @@ func buildVsPreviousPeriod(totals sqlc.SummarizePeriodTotalsRow, prev sqlc.Track
 		ExpenseChangePct:   expenseChangePct.String(),
 		PreviousPeriodID:   prev.TrackingPeriodID.String(),
 	})
+}
+
+// budgetProrationFactor returns the multiplier to apply to budget amounts when
+// carrying them from one period to the next.
+//
+// A transition bridge is not a comparable slice of time, so copying amounts
+// across one verbatim would either fire bogus "exceeded" alerts (going into a
+// short bridge) or leave the budget uselessly slack (coming out of a long one).
+// Scaling by the change in length keeps the intent of the budget intact and
+// roughly restores the original amount once the bridge is over.
+//
+// Between two regular periods the factor is exactly 1: a 30-to-31-day drift
+// silently moving someone's budget would just be baffling.
+func budgetProrationFactor(from, to sqlc.TrackingPeriod) decimal.Decimal {
+	one := decimal.NewFromInt(1)
+	if from.IsTransition == to.IsTransition {
+		return one
+	}
+	fromDays, ok := periodDays(from)
+	if !ok {
+		return one
+	}
+	toDays, ok := periodDays(to)
+	if !ok {
+		return one
+	}
+	return decimal.NewFromInt(int64(toDays)).Div(decimal.NewFromInt(int64(fromDays)))
+}
+
+// prorateAmount applies a proration factor, leaving the amount untouched when
+// the factor is exactly 1 so an unscaled copy stays bit-for-bit identical.
+func prorateAmount(amount, factor decimal.Decimal) decimal.Decimal {
+	if factor.Equal(decimal.NewFromInt(1)) {
+		return amount
+	}
+	return amount.Mul(factor).Round(2)
+}
+
+// periodDays returns the inclusive length of a period, and false when its dates
+// are missing or inverted. That would be a data bug, but letting it through
+// would divide the rollover by zero and take down the close for that user, so we
+// degrade to an unscaled copy instead.
+func periodDays(p sqlc.TrackingPeriod) (int, bool) {
+	if !p.StartDate.Valid || !p.EndDate.Valid || p.EndDate.Time.Before(p.StartDate.Time) {
+		return 0, false
+	}
+	return domain.PeriodRange{Start: p.StartDate.Time, End: p.EndDate.Time}.DurationDays(), true
 }

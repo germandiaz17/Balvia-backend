@@ -14,7 +14,8 @@ import (
 )
 
 // AccountService manages a user's financial accounts. Balances are not edited
-// here — they change only through transactions.
+// here — they change only through transactions, with one exception: the opening
+// balance of an account that has no movements yet (see Update).
 type AccountService struct {
 	store database.Store
 }
@@ -34,12 +35,15 @@ type CreateAccountInput struct {
 }
 
 type UpdateAccountInput struct {
-	Name         string
-	AccountType  string
-	Icon         *string
-	Color        *string
-	DisplayOrder int32
-	IsArchived   bool
+	Name        string
+	AccountType string
+	Icon        *string
+	Color       *string
+	// InitialBalance, when non-nil, restates the opening balance. Only allowed
+	// while the account has no transactions; nil leaves it untouched.
+	InitialBalance *decimal.Decimal
+	DisplayOrder   int32
+	IsArchived     bool
 }
 
 func (s *AccountService) Create(ctx context.Context, userID uuid.UUID, in CreateAccountInput) (sqlc.Account, error) {
@@ -72,15 +76,33 @@ func (s *AccountService) Get(ctx context.Context, userID, id uuid.UUID) (sqlc.Ac
 }
 
 func (s *AccountService) Update(ctx context.Context, userID, id uuid.UUID, in UpdateAccountInput) (sqlc.Account, error) {
+	var opening decimal.NullDecimal
+	if in.InitialBalance != nil {
+		// Restating the opening balance of an account with movements would
+		// silently rewrite history, so refuse instead of shifting balances.
+		n, err := s.store.CountTransactionsByAccount(ctx, sqlc.CountTransactionsByAccountParams{
+			UserID:    userID,
+			AccountID: id,
+		})
+		if err != nil {
+			return sqlc.Account{}, err
+		}
+		if n > 0 {
+			return sqlc.Account{}, domain.ErrAccountHasTransactions
+		}
+		opening = decimal.NullDecimal{Decimal: *in.InitialBalance, Valid: true}
+	}
+
 	acct, err := s.store.UpdateAccount(ctx, sqlc.UpdateAccountParams{
-		Name:         in.Name,
-		AccountType:  in.AccountType,
-		Icon:         in.Icon,
-		Color:        in.Color,
-		DisplayOrder: in.DisplayOrder,
-		IsArchived:   in.IsArchived,
-		ID:           id,
-		UserID:       userID,
+		Name:           in.Name,
+		AccountType:    in.AccountType,
+		Icon:           in.Icon,
+		Color:          in.Color,
+		InitialBalance: opening,
+		DisplayOrder:   in.DisplayOrder,
+		IsArchived:     in.IsArchived,
+		ID:             id,
+		UserID:         userID,
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return sqlc.Account{}, domain.ErrNotFound

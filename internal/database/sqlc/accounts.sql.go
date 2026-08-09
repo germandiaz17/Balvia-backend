@@ -190,22 +190,30 @@ SET name = $1,
     color = $4,
     display_order = $5,
     is_archived = $6,
+    current_balance = current_balance
+        + (COALESCE($7, initial_balance) - initial_balance),
+    initial_balance = COALESCE($7, initial_balance),
     updated_at = NOW()
-WHERE id = $7 AND user_id = $8 AND deleted_at IS NULL
+WHERE id = $8 AND user_id = $9 AND deleted_at IS NULL
 RETURNING id, user_id, name, account_type, currency, initial_balance, current_balance, icon, color, is_archived, display_order, created_at, updated_at, deleted_at
 `
 
 type UpdateAccountParams struct {
-	Name         string    `json:"name"`
-	AccountType  string    `json:"account_type"`
-	Icon         *string   `json:"icon"`
-	Color        *string   `json:"color"`
-	DisplayOrder int32     `json:"display_order"`
-	IsArchived   bool      `json:"is_archived"`
-	ID           uuid.UUID `json:"id"`
-	UserID       uuid.UUID `json:"user_id"`
+	Name           string              `json:"name"`
+	AccountType    string              `json:"account_type"`
+	Icon           *string             `json:"icon"`
+	Color          *string             `json:"color"`
+	DisplayOrder   int32               `json:"display_order"`
+	IsArchived     bool                `json:"is_archived"`
+	InitialBalance decimal.NullDecimal `json:"initial_balance"`
+	ID             uuid.UUID           `json:"id"`
+	UserID         uuid.UUID           `json:"user_id"`
 }
 
+// initial_balance is optional: NULL leaves the opening balance untouched.
+// When supplied, current_balance is shifted by the same delta so the invariant
+// current_balance = initial_balance + movements keeps holding. Callers must
+// only supply it for accounts with no transactions (see AccountService.Update).
 func (q *Queries) UpdateAccount(ctx context.Context, arg UpdateAccountParams) (Account, error) {
 	row := q.db.QueryRow(ctx, updateAccount,
 		arg.Name,
@@ -214,6 +222,7 @@ func (q *Queries) UpdateAccount(ctx context.Context, arg UpdateAccountParams) (A
 		arg.Color,
 		arg.DisplayOrder,
 		arg.IsArchived,
+		arg.InitialBalance,
 		arg.ID,
 		arg.UserID,
 	)

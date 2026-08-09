@@ -230,7 +230,7 @@ func (q *Queries) ExpenseByDay(ctx context.Context, trackingPeriodID uuid.UUID) 
 }
 
 const getPreviousTrackingPeriod = `-- name: GetPreviousTrackingPeriod :one
-SELECT id, user_id, start_date, end_date, status, sequence_number, config_start_day, config_duration_days, closed_at, created_at, updated_at FROM tracking_periods
+SELECT id, user_id, start_date, end_date, status, sequence_number, config_start_day, config_duration_days, closed_at, created_at, updated_at, config_period_mode, is_transition FROM tracking_periods
 WHERE user_id = $1
   AND sequence_number = $2 - 1
   AND status = 'closed'
@@ -257,6 +257,8 @@ func (q *Queries) GetPreviousTrackingPeriod(ctx context.Context, arg GetPrevious
 		&i.ClosedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.ConfigPeriodMode,
+		&i.IsTransition,
 	)
 	return i, err
 }

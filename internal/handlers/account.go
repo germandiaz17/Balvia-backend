@@ -41,12 +41,15 @@ type createAccountRequest struct {
 }
 
 type updateAccountRequest struct {
-	Name         string  `json:"name" validate:"required,max=100"`
-	AccountType  string  `json:"account_type" validate:"required,oneof=cash checking savings credit_card investment other"`
-	Icon         *string `json:"icon" validate:"omitempty,max=50"`
-	Color        *string `json:"color" validate:"omitempty,len=7"`
-	DisplayOrder int32   `json:"display_order"`
-	IsArchived   bool    `json:"is_archived"`
+	Name        string  `json:"name" validate:"required,max=100"`
+	AccountType string  `json:"account_type" validate:"required,oneof=cash checking savings credit_card investment other"`
+	Icon        *string `json:"icon" validate:"omitempty,max=50"`
+	Color       *string `json:"color" validate:"omitempty,len=7"`
+	// InitialBalance is optional. Omit it to leave the opening balance alone;
+	// send it only while the account has no transactions (422 otherwise).
+	InitialBalance *decimal.Decimal `json:"initial_balance"`
+	DisplayOrder   int32            `json:"display_order"`
+	IsArchived     bool             `json:"is_archived"`
 }
 
 func (h *AccountHandler) Create(c *fiber.Ctx) error {
@@ -135,12 +138,13 @@ func (h *AccountHandler) Update(c *fiber.Ctx) error {
 		return fiber.NewError(fiber.StatusBadRequest, err.Error())
 	}
 	acct, err := h.svc.Update(c.Context(), userID, id, services.UpdateAccountInput{
-		Name:         req.Name,
-		AccountType:  req.AccountType,
-		Icon:         req.Icon,
-		Color:        req.Color,
-		DisplayOrder: req.DisplayOrder,
-		IsArchived:   req.IsArchived,
+		Name:           req.Name,
+		AccountType:    req.AccountType,
+		Icon:           req.Icon,
+		Color:          req.Color,
+		InitialBalance: req.InitialBalance,
+		DisplayOrder:   req.DisplayOrder,
+		IsArchived:     req.IsArchived,
 	})
 	if err != nil {
 		return mapDomainError(err)

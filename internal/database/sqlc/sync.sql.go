@@ -362,7 +362,7 @@ func (q *Queries) SyncPullSavingsGoals(ctx context.Context, arg SyncPullSavingsG
 }
 
 const syncPullTrackingPeriods = `-- name: SyncPullTrackingPeriods :many
-SELECT id, user_id, start_date, end_date, status, sequence_number, config_start_day, config_duration_days, closed_at, created_at, updated_at FROM tracking_periods
+SELECT id, user_id, start_date, end_date, status, sequence_number, config_start_day, config_duration_days, closed_at, created_at, updated_at, config_period_mode, is_transition FROM tracking_periods
 WHERE user_id = $1
   AND updated_at > $2
 ORDER BY updated_at ASC, id ASC
@@ -396,6 +396,8 @@ func (q *Queries) SyncPullTrackingPeriods(ctx context.Context, arg SyncPullTrack
 			&i.ClosedAt,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.ConfigPeriodMode,
+			&i.IsTransition,
 		); err != nil {
 			return nil, err
 		}

@@ -8,8 +8,9 @@ INSERT INTO user_settings (
     locale,
     theme,
     default_period_view,
-    subscription_tier
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+    subscription_tier,
+    tracking_period_mode
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 RETURNING *;
 
 -- name: GetUserSettingsByUserID :one
@@ -22,12 +23,14 @@ WHERE user_id = $1;
 -- trigger. country_code and subscription_tier are deliberately not editable
 -- here (the tier is server-controlled).
 --
--- Changing tracking_duration_days does NOT touch the active tracking period:
--- ClosePeriodTx re-reads these settings at close time, so the new duration
--- applies to the NEXT period. See UserSettingsService.Update.
+-- Changing tracking_duration_days or tracking_period_mode does NOT touch the
+-- active tracking period: ClosePeriodTx re-reads these settings at close time,
+-- so the new configuration applies to the NEXT period. See
+-- UserSettingsService.Update for the single, narrow exception.
 UPDATE user_settings
 SET tracking_start_day     = COALESCE(sqlc.narg(tracking_start_day),     tracking_start_day),
     tracking_duration_days = COALESCE(sqlc.narg(tracking_duration_days), tracking_duration_days),
+    tracking_period_mode   = COALESCE(sqlc.narg(tracking_period_mode),   tracking_period_mode),
     default_currency       = COALESCE(sqlc.narg(default_currency),       default_currency),
     locale                 = COALESCE(sqlc.narg(locale),                 locale),
     theme                  = COALESCE(sqlc.narg(theme),                  theme),

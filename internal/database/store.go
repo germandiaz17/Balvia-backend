@@ -129,12 +129,13 @@ type MaterialiseRecurringParams struct {
 }
 
 // OnboardUserParams carries the fully-computed inputs for onboarding. The
-// UserID fields of Settings and Period are filled in by OnboardUser once the
-// user row is created, so callers can leave them zero.
+// UserID fields of Settings, Period and Account are filled in by OnboardUser
+// once the user row is created, so callers can leave them zero.
 type OnboardUserParams struct {
 	User     sqlc.CreateUserParams
 	Settings sqlc.CreateUserSettingsParams
 	Period   sqlc.CreateTrackingPeriodParams
+	Account  sqlc.CreateAccountParams
 }
 
 // OnboardUserResult is the set of rows created during onboarding.
@@ -142,6 +143,7 @@ type OnboardUserResult struct {
 	User           sqlc.User
 	Settings       sqlc.UserSetting
 	TrackingPeriod sqlc.TrackingPeriod
+	Account        sqlc.Account
 }
 
 // OnboardUser implements Store.
@@ -170,6 +172,17 @@ func (s *SQLStore) OnboardUser(ctx context.Context, arg OnboardUserParams) (Onbo
 			return fmt.Errorf("create tracking period: %w", err)
 		}
 		res.TrackingPeriod = tp
+
+		// Every user must own at least one account: transactions require an
+		// account_id, so without this the quick-capture flow is unusable until
+		// the user creates one by hand.
+		account := arg.Account
+		account.UserID = user.ID
+		acc, err := q.CreateAccount(ctx, account)
+		if err != nil {
+			return fmt.Errorf("create default account: %w", err)
+		}
+		res.Account = acc
 
 		return nil
 	})

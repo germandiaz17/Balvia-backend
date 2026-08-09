@@ -45,7 +45,12 @@ type periodResponse struct {
 	Status             string    `json:"status"`
 	ConfigStartDay     int16     `json:"config_start_day"`
 	ConfigDurationDays int16     `json:"config_duration_days"`
-	ClosedAt           *string   `json:"closed_at"`
+	ConfigPeriodMode   string    `json:"config_period_mode"`
+	// IsTransition marks a one-off bridge created when the user switched period
+	// mode. Its length is deliberately outside the usual 28-31 days, so the
+	// client should present it as a transition rather than a normal period.
+	IsTransition bool    `json:"is_transition"`
+	ClosedAt     *string `json:"closed_at"`
 }
 
 // toPeriodResponse maps a sqlc.TrackingPeriod to the wire response.
@@ -63,6 +68,8 @@ func toPeriodResponse(p sqlc.TrackingPeriod) periodResponse {
 		Status:             p.Status,
 		ConfigStartDay:     p.ConfigStartDay,
 		ConfigDurationDays: p.ConfigDurationDays,
+		ConfigPeriodMode:   p.ConfigPeriodMode,
+		IsTransition:       p.IsTransition,
 		ClosedAt:           closedAt,
 	}
 }

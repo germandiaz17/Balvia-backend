@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/germandiaz17/Balvia-backend/internal/database"
 	"github.com/germandiaz17/Balvia-backend/internal/database/sqlc"
@@ -46,6 +47,7 @@ var ValidPeriodViews = map[string]bool{
 type SettingsUpdateInput struct {
 	TrackingStartDay     *int16
 	TrackingDurationDays *int16
+	TrackingPeriodMode   *string
 	DefaultCurrency      *string
 	Locale               *string
 	Theme                *string
@@ -56,6 +58,7 @@ type SettingsUpdateInput struct {
 func (in SettingsUpdateInput) IsEmpty() bool {
 	return in.TrackingStartDay == nil &&
 		in.TrackingDurationDays == nil &&
+		in.TrackingPeriodMode == nil &&
 		in.DefaultCurrency == nil &&
 		in.Locale == nil &&
 		in.Theme == nil &&
@@ -70,18 +73,24 @@ type SettingsView struct {
 	Settings sqlc.UserSetting
 	// ActivePeriodEnd is nil when the user has no active period.
 	ActivePeriodEnd *time.Time
+	// ReshapedActivePeriod reports that the change took effect immediately
+	// because the onboarding carve-out applied, rather than being deferred to
+	// the next period. See UserSettingsService.Update.
+	ReshapedActivePeriod bool
 }
 
 // UserSettingsService reads and updates a user's preferences.
 //
 // Domain rule 8 — changes to the tracking configuration apply to the NEXT
 // tracking period, never to the active one. This service upholds it by
-// construction: it only ever writes to user_settings and never touches
-// tracking_periods. The rollover reads the settings at close time
-// (ClosePeriodTx re-reads GetUserSettingsByUserID), so a new duration is picked
-// up by whichever period is generated next. Do NOT "optimise" this by reading
-// the settings when a period is created — that would silently reshape the
-// active period and break the rule.
+// construction: it writes to user_settings and lets the rollover read them at
+// close time (ClosePeriodTx re-reads GetUserSettingsByUserID), so a new duration
+// or mode is picked up by whichever period is generated next. Do NOT "optimise"
+// this by reading the settings when a period is created — that would silently
+// reshape the active period and break the rule.
+//
+// There is exactly one exception, reshapePristineFirstPeriod, and its guard is
+// deliberately narrow. Read its doc before touching it.
 type UserSettingsService struct {
 	store database.Store
 	now   func() time.Time
@@ -112,6 +121,7 @@ func (s *UserSettingsService) Update(ctx context.Context, userID uuid.UUID, in S
 	row, err := s.store.UpdateUserSettings(ctx, sqlc.UpdateUserSettingsParams{
 		TrackingStartDay:     in.TrackingStartDay,
 		TrackingDurationDays: in.TrackingDurationDays,
+		TrackingPeriodMode:   in.TrackingPeriodMode,
 		DefaultCurrency:      in.DefaultCurrency,
 		Locale:               in.Locale,
 		Theme:                in.Theme,
@@ -123,7 +133,82 @@ func (s *UserSettingsService) Update(ctx context.Context, userID uuid.UUID, in S
 	} else if err != nil {
 		return SettingsView{}, err
 	}
-	return s.withActivePeriod(ctx, userID, row)
+
+	view, err := s.withActivePeriod(ctx, userID, row)
+	if err != nil {
+		return SettingsView{}, err
+	}
+
+	if in.TrackingPeriodMode != nil {
+		reshaped, err := s.reshapePristineFirstPeriod(ctx, userID, row)
+		if err != nil {
+			return SettingsView{}, err
+		}
+		if reshaped != nil {
+			end := dateOnly(reshaped.EndDate.Time)
+			view.ActivePeriodEnd = &end
+			view.ReshapedActivePeriod = true
+		}
+	}
+
+	return view, nil
+}
+
+// reshapePristineFirstPeriod is the single, deliberate exception to domain rule
+// 8, and it exists for the onboarding wizard.
+//
+// The wizard runs *after* registration, so by the time the user picks a period
+// mode their first period already exists in the default one. Deferring the
+// change would hand a brand-new user a transition bridge on day one, which is
+// absurd. When the active period is their first AND carries no transactions,
+// there is nothing a reshape can invalidate: no summary, no insights, no
+// balances, nothing the user has seen add up. So we reshape it in place.
+//
+// Everything about the guard is load-bearing. Past the first period, or once a
+// single transaction exists, the change defers like any other. It returns nil
+// when the carve-out does not apply.
+func (s *UserSettingsService) reshapePristineFirstPeriod(
+	ctx context.Context,
+	userID uuid.UUID,
+	settings sqlc.UserSetting,
+) (*sqlc.TrackingPeriod, error) {
+	period, err := s.activePeriod(ctx, userID)
+	if errors.Is(err, domain.ErrNoActivePeriod) {
+		return nil, nil
+	} else if err != nil {
+		return nil, err
+	}
+
+	if period.SequenceNumber != 1 || period.ConfigPeriodMode == settings.TrackingPeriodMode {
+		return nil, nil
+	}
+
+	count, err := s.store.CountTransactionsByPeriod(ctx, period.ID)
+	if err != nil {
+		return nil, err
+	}
+	if count > 0 {
+		return nil, nil
+	}
+
+	// Keep the original start date — the period has already begun — and let the
+	// new mode decide where it ends.
+	rng := domain.FirstPeriodRange(
+		period.StartDate.Time,
+		settings.TrackingPeriodMode,
+		int(settings.TrackingDurationDays),
+	)
+	updated, err := s.store.ReshapeTrackingPeriod(ctx, sqlc.ReshapeTrackingPeriodParams{
+		ID:                 period.ID,
+		EndDate:            pgtype.Date{Time: rng.End, Valid: true},
+		ConfigPeriodMode:   settings.TrackingPeriodMode,
+		ConfigDurationDays: settings.TrackingDurationDays,
+		IsTransition:       rng.IsTransition,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &updated, nil
 }
 
 // validateSettingsInput rejects out-of-range and out-of-enum values before they
@@ -139,6 +224,9 @@ func validateSettingsInput(in SettingsUpdateInput) error {
 		if *sd < minTrackingStartDay || *sd > maxTrackingStartDay {
 			return domain.ErrInvalidTrackingConfig
 		}
+	}
+	if m := in.TrackingPeriodMode; m != nil && !domain.ValidPeriodModes[*m] {
+		return domain.ErrInvalidTrackingConfig
 	}
 	if t := in.Theme; t != nil && !ValidThemes[*t] {
 		return domain.ErrInvalidSettings

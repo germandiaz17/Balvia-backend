@@ -16,7 +16,7 @@ const closePeriod = `-- name: ClosePeriod :one
 UPDATE tracking_periods
 SET status = 'closed', closed_at = NOW(), updated_at = NOW()
 WHERE id = $1 AND status = 'active'
-RETURNING id, user_id, start_date, end_date, status, sequence_number, config_start_day, config_duration_days, closed_at, created_at, updated_at
+RETURNING id, user_id, start_date, end_date, status, sequence_number, config_start_day, config_duration_days, closed_at, created_at, updated_at, config_period_mode, is_transition
 `
 
 func (q *Queries) ClosePeriod(ctx context.Context, id uuid.UUID) (TrackingPeriod, error) {
@@ -34,6 +34,8 @@ func (q *Queries) ClosePeriod(ctx context.Context, id uuid.UUID) (TrackingPeriod
 		&i.ClosedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.ConfigPeriodMode,
+		&i.IsTransition,
 	)
 	return i, err
 }
@@ -46,9 +48,11 @@ INSERT INTO tracking_periods (
     status,
     sequence_number,
     config_start_day,
-    config_duration_days
-) VALUES ($1, $2, $3, $4, $5, $6, $7)
-RETURNING id, user_id, start_date, end_date, status, sequence_number, config_start_day, config_duration_days, closed_at, created_at, updated_at
+    config_duration_days,
+    config_period_mode,
+    is_transition
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+RETURNING id, user_id, start_date, end_date, status, sequence_number, config_start_day, config_duration_days, closed_at, created_at, updated_at, config_period_mode, is_transition
 `
 
 type CreateTrackingPeriodParams struct {
@@ -59,6 +63,8 @@ type CreateTrackingPeriodParams struct {
 	SequenceNumber     int32       `json:"sequence_number"`
 	ConfigStartDay     int16       `json:"config_start_day"`
 	ConfigDurationDays int16       `json:"config_duration_days"`
+	ConfigPeriodMode   string      `json:"config_period_mode"`
+	IsTransition       bool        `json:"is_transition"`
 }
 
 func (q *Queries) CreateTrackingPeriod(ctx context.Context, arg CreateTrackingPeriodParams) (TrackingPeriod, error) {
@@ -70,6 +76,8 @@ func (q *Queries) CreateTrackingPeriod(ctx context.Context, arg CreateTrackingPe
 		arg.SequenceNumber,
 		arg.ConfigStartDay,
 		arg.ConfigDurationDays,
+		arg.ConfigPeriodMode,
+		arg.IsTransition,
 	)
 	var i TrackingPeriod
 	err := row.Scan(
@@ -84,12 +92,14 @@ func (q *Queries) CreateTrackingPeriod(ctx context.Context, arg CreateTrackingPe
 		&i.ClosedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.ConfigPeriodMode,
+		&i.IsTransition,
 	)
 	return i, err
 }
 
 const getActiveTrackingPeriod = `-- name: GetActiveTrackingPeriod :one
-SELECT id, user_id, start_date, end_date, status, sequence_number, config_start_day, config_duration_days, closed_at, created_at, updated_at FROM tracking_periods
+SELECT id, user_id, start_date, end_date, status, sequence_number, config_start_day, config_duration_days, closed_at, created_at, updated_at, config_period_mode, is_transition FROM tracking_periods
 WHERE user_id = $1 AND status = 'active'
 `
 
@@ -108,12 +118,14 @@ func (q *Queries) GetActiveTrackingPeriod(ctx context.Context, userID uuid.UUID)
 		&i.ClosedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.ConfigPeriodMode,
+		&i.IsTransition,
 	)
 	return i, err
 }
 
 const getTrackingPeriodByID = `-- name: GetTrackingPeriodByID :one
-SELECT id, user_id, start_date, end_date, status, sequence_number, config_start_day, config_duration_days, closed_at, created_at, updated_at FROM tracking_periods
+SELECT id, user_id, start_date, end_date, status, sequence_number, config_start_day, config_duration_days, closed_at, created_at, updated_at, config_period_mode, is_transition FROM tracking_periods
 WHERE id = $1
 `
 
@@ -132,12 +144,14 @@ func (q *Queries) GetTrackingPeriodByID(ctx context.Context, id uuid.UUID) (Trac
 		&i.ClosedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.ConfigPeriodMode,
+		&i.IsTransition,
 	)
 	return i, err
 }
 
 const getTrackingPeriodForUser = `-- name: GetTrackingPeriodForUser :one
-SELECT id, user_id, start_date, end_date, status, sequence_number, config_start_day, config_duration_days, closed_at, created_at, updated_at FROM tracking_periods
+SELECT id, user_id, start_date, end_date, status, sequence_number, config_start_day, config_duration_days, closed_at, created_at, updated_at, config_period_mode, is_transition FROM tracking_periods
 WHERE id = $1 AND user_id = $2
 `
 
@@ -162,12 +176,14 @@ func (q *Queries) GetTrackingPeriodForUser(ctx context.Context, arg GetTrackingP
 		&i.ClosedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.ConfigPeriodMode,
+		&i.IsTransition,
 	)
 	return i, err
 }
 
 const listDueActivePeriods = `-- name: ListDueActivePeriods :many
-SELECT id, user_id, start_date, end_date, status, sequence_number, config_start_day, config_duration_days, closed_at, created_at, updated_at FROM tracking_periods
+SELECT id, user_id, start_date, end_date, status, sequence_number, config_start_day, config_duration_days, closed_at, created_at, updated_at, config_period_mode, is_transition FROM tracking_periods
 WHERE status = 'active' AND end_date < $1
 ORDER BY user_id, sequence_number
 `
@@ -194,6 +210,8 @@ func (q *Queries) ListDueActivePeriods(ctx context.Context, endDate pgtype.Date)
 			&i.ClosedAt,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.ConfigPeriodMode,
+			&i.IsTransition,
 		); err != nil {
 			return nil, err
 		}
@@ -206,7 +224,7 @@ func (q *Queries) ListDueActivePeriods(ctx context.Context, endDate pgtype.Date)
 }
 
 const listTrackingPeriodsByUser = `-- name: ListTrackingPeriodsByUser :many
-SELECT id, user_id, start_date, end_date, status, sequence_number, config_start_day, config_duration_days, closed_at, created_at, updated_at FROM tracking_periods
+SELECT id, user_id, start_date, end_date, status, sequence_number, config_start_day, config_duration_days, closed_at, created_at, updated_at, config_period_mode, is_transition FROM tracking_periods
 WHERE user_id = $1
 ORDER BY sequence_number DESC
 `
@@ -232,6 +250,8 @@ func (q *Queries) ListTrackingPeriodsByUser(ctx context.Context, userID uuid.UUI
 			&i.ClosedAt,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.ConfigPeriodMode,
+			&i.IsTransition,
 		); err != nil {
 			return nil, err
 		}
@@ -241,4 +261,56 @@ func (q *Queries) ListTrackingPeriodsByUser(ctx context.Context, userID uuid.UUI
 		return nil, err
 	}
 	return items, nil
+}
+
+const reshapeTrackingPeriod = `-- name: ReshapeTrackingPeriod :one
+UPDATE tracking_periods
+SET end_date             = $1,
+    config_period_mode   = $2,
+    config_duration_days = $3,
+    is_transition        = $4,
+    updated_at           = NOW()
+WHERE id = $5 AND status = 'active'
+RETURNING id, user_id, start_date, end_date, status, sequence_number, config_start_day, config_duration_days, closed_at, created_at, updated_at, config_period_mode, is_transition
+`
+
+type ReshapeTrackingPeriodParams struct {
+	EndDate            pgtype.Date `json:"end_date"`
+	ConfigPeriodMode   string      `json:"config_period_mode"`
+	ConfigDurationDays int16       `json:"config_duration_days"`
+	IsTransition       bool        `json:"is_transition"`
+	ID                 uuid.UUID   `json:"id"`
+}
+
+// Rewrites the end date and config metadata of an *active* period in place.
+//
+// This deliberately breaks domain rule 8 (configuration changes never reshape
+// the active period), so it has exactly one caller: the onboarding carve-out in
+// UserSettingsService.Update, which only fires for a pristine first period with
+// no transactions. Do not reach for it anywhere else.
+func (q *Queries) ReshapeTrackingPeriod(ctx context.Context, arg ReshapeTrackingPeriodParams) (TrackingPeriod, error) {
+	row := q.db.QueryRow(ctx, reshapeTrackingPeriod,
+		arg.EndDate,
+		arg.ConfigPeriodMode,
+		arg.ConfigDurationDays,
+		arg.IsTransition,
+		arg.ID,
+	)
+	var i TrackingPeriod
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.StartDate,
+		&i.EndDate,
+		&i.Status,
+		&i.SequenceNumber,
+		&i.ConfigStartDay,
+		&i.ConfigDurationDays,
+		&i.ClosedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.ConfigPeriodMode,
+		&i.IsTransition,
+	)
+	return i, err
 }

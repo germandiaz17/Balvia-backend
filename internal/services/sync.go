@@ -35,6 +35,7 @@ package services
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"time"
 
@@ -128,7 +129,13 @@ type PushItem struct {
 	// For creates and deletes this field is informational only.
 	ClientUpdatedAt *time.Time `json:"client_updated_at,omitempty"`
 
-	// Transaction-specific fields (used when EntityType == "transaction").
+	// Payload holds the entity fields, shaped like the matching CRUD endpoint's
+	// body. Decoded per entity type — see sync_push_entities.go.
+	Payload json.RawMessage `json:"payload,omitempty"`
+
+	// TxnPayload is the transaction-only field from the original single-entity
+	// push, kept so an older client keeps working. When both are present Payload
+	// wins.
 	TxnPayload *PushTransactionPayload `json:"transaction_payload,omitempty"`
 }
 
@@ -186,19 +193,35 @@ type PushResult struct {
 
 // --- Service ----------------------------------------------------------------
 
+// SyncServices bundles the per-entity services that /sync/push replays client
+// mutations through.
+//
+// Push deliberately owns no business logic of its own: an offline edit must land
+// under exactly the rules an online one would, or the two paths drift and the
+// offline one quietly becomes the lenient way in. Every field here is the same
+// instance the matching REST handler uses.
+type SyncServices struct {
+	Transaction *TransactionService
+	Account     *AccountService
+	Category    *CategoryService
+	Budget      *BudgetService
+	SavingsGoal *SavingsGoalService
+	Recurring   *RecurringTransactionService
+}
+
 // SyncService implements the sync-delta logic.
 type SyncService struct {
-	store  database.Store
-	txnSvc *TransactionService
-	log    zerolog.Logger
+	store database.Store
+	svcs  SyncServices
+	log   zerolog.Logger
 }
 
 // NewSyncService wires the service with its dependencies.
-func NewSyncService(store database.Store, txnSvc *TransactionService, log zerolog.Logger) *SyncService {
+func NewSyncService(store database.Store, log zerolog.Logger, svcs SyncServices) *SyncService {
 	return &SyncService{
-		store:  store,
-		txnSvc: txnSvc,
-		log:    log,
+		store: store,
+		svcs:  svcs,
+		log:   log,
 	}
 }
 
@@ -362,6 +385,18 @@ func (s *SyncService) processItem(ctx context.Context, userID uuid.UUID, item Pu
 	switch item.EntityType {
 	case EntityTransaction:
 		return s.pushTransaction(ctx, userID, item)
+	case EntityAccount:
+		return s.accountPusher().apply(ctx, userID, item)
+	case EntityCategory:
+		return s.categoryPusher().apply(ctx, userID, item)
+	case EntityBudget:
+		return s.budgetPusher().apply(ctx, userID, item)
+	case EntitySavingsGoal:
+		return s.savingsGoalPusher().apply(ctx, userID, item)
+	case EntityRecurring:
+		return s.recurringPusher().apply(ctx, userID, item)
+	case EntityContribution:
+		return s.pushContribution(ctx, userID, item)
 	default:
 		reason := "unsupported entity_type: " + string(item.EntityType)
 		return rejected(item.ClientRef, reason)
@@ -415,7 +450,7 @@ func (s *SyncService) pushCreateTransaction(ctx context.Context, userID uuid.UUI
 		return rejected(item.ClientRef, err.Error())
 	}
 
-	txn, err := s.txnSvc.Create(ctx, userID, in)
+	txn, err := s.svcs.Transaction.Create(ctx, userID, in)
 	if err != nil {
 		return mapServiceError(item.ClientRef, err)
 	}
@@ -436,7 +471,7 @@ func (s *SyncService) pushUpdateTransaction(ctx context.Context, userID uuid.UUI
 	}
 
 	// Conflict detection: load the current server version.
-	current, err := s.txnSvc.Get(ctx, userID, *item.EntityID)
+	current, err := s.svcs.Transaction.Get(ctx, userID, *item.EntityID)
 	if err != nil {
 		return mapServiceError(item.ClientRef, err)
 	}
@@ -469,7 +504,7 @@ func (s *SyncService) pushUpdateTransaction(ctx context.Context, userID uuid.UUI
 		return rejected(item.ClientRef, err.Error())
 	}
 
-	updated, err := s.txnSvc.Update(ctx, userID, *item.EntityID, in)
+	updated, err := s.svcs.Transaction.Update(ctx, userID, *item.EntityID, in)
 	if err != nil {
 		return mapServiceError(item.ClientRef, err)
 	}
@@ -486,7 +521,7 @@ func (s *SyncService) pushDeleteTransaction(ctx context.Context, userID uuid.UUI
 	}
 
 	// Check immutability before attempting the delete.
-	current, err := s.txnSvc.Get(ctx, userID, *item.EntityID)
+	current, err := s.svcs.Transaction.Get(ctx, userID, *item.EntityID)
 	if err != nil {
 		// If already deleted → idempotent skip.
 		if errors.Is(err, domain.ErrNotFound) {
@@ -502,7 +537,7 @@ func (s *SyncService) pushDeleteTransaction(ctx context.Context, userID uuid.UUI
 		return rejected(item.ClientRef, domain.ErrPeriodClosed.Error())
 	}
 
-	if err := s.txnSvc.Delete(ctx, userID, *item.EntityID); err != nil {
+	if err := s.svcs.Transaction.Delete(ctx, userID, *item.EntityID); err != nil {
 		if errors.Is(err, domain.ErrNotFound) {
 			return PushItemResult{ClientRef: item.ClientRef, Status: StatusSkipped}
 		}
@@ -555,21 +590,13 @@ func txnPayloadToInput(p *PushTransactionPayload) (CreateTransactionInput, error
 }
 
 func mapServiceError(clientRef string, err error) PushItemResult {
-	switch {
-	case errors.Is(err, domain.ErrNotFound),
-		errors.Is(err, domain.ErrAccountNotFound),
-		errors.Is(err, domain.ErrCategoryNotFound),
-		errors.Is(err, domain.ErrGoalNotFound):
+	// A rule the client broke is permanent: report why, so it can drop the item
+	// and tell the user. Anything else is ours to own and worth a retry, so it
+	// stays a generic server error and gets logged rather than explained.
+	if domain.IsBusinessRule(err) {
 		return rejected(clientRef, err.Error())
-	case errors.Is(err, domain.ErrNoActivePeriod),
-		errors.Is(err, domain.ErrInvalidTransfer),
-		errors.Is(err, domain.ErrDateOutsidePeriod),
-		errors.Is(err, domain.ErrInvalidAmount),
-		errors.Is(err, domain.ErrPeriodClosed):
-		return rejected(clientRef, err.Error())
-	default:
-		return serverError(clientRef, err)
 	}
+	return serverError(clientRef, err)
 }
 
 func rejected(clientRef, reason string) PushItemResult {

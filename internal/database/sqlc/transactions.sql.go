@@ -13,6 +13,43 @@ import (
 	"github.com/shopspring/decimal"
 )
 
+const countTransactionsByAccount = `-- name: CountTransactionsByAccount :one
+SELECT COUNT(*) FROM transactions
+WHERE user_id = $1
+  AND deleted_at IS NULL
+  AND (account_id = $2 OR transfer_account_id = $2)
+`
+
+type CountTransactionsByAccountParams struct {
+	UserID    uuid.UUID `json:"user_id"`
+	AccountID uuid.UUID `json:"account_id"`
+}
+
+// Counts live movements touching an account, either as source or as the
+// counter-account of a transfer. Used to decide whether its opening balance is
+// still editable.
+func (q *Queries) CountTransactionsByAccount(ctx context.Context, arg CountTransactionsByAccountParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countTransactionsByAccount, arg.UserID, arg.AccountID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const countTransactionsByPeriod = `-- name: CountTransactionsByPeriod :one
+SELECT COUNT(*) FROM transactions
+WHERE tracking_period_id = $1
+  AND deleted_at IS NULL
+`
+
+// Counts live movements inside a tracking period. Used to decide whether the
+// period is still pristine enough to be reshaped in place.
+func (q *Queries) CountTransactionsByPeriod(ctx context.Context, trackingPeriodID uuid.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, countTransactionsByPeriod, trackingPeriodID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const createTransaction = `-- name: CreateTransaction :one
 INSERT INTO transactions (
     user_id,

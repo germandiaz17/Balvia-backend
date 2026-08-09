@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"encoding/json"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
@@ -130,12 +131,19 @@ type syncPushRequest struct {
 }
 
 type syncPushItemRequest struct {
-	ClientRef       string                           `json:"client_ref"`
-	EntityType      string                           `json:"entity_type"`
-	Operation       string                           `json:"operation"`
-	EntityID        *string                          `json:"entity_id,omitempty"`
-	ClientUpdatedAt *string                          `json:"client_updated_at,omitempty"`
-	TxnPayload      *services.PushTransactionPayload `json:"transaction_payload,omitempty"`
+	ClientRef       string  `json:"client_ref"`
+	EntityType      string  `json:"entity_type"`
+	Operation       string  `json:"operation"`
+	EntityID        *string `json:"entity_id,omitempty"`
+	ClientUpdatedAt *string `json:"client_updated_at,omitempty"`
+
+	// Payload carries the entity fields for every entity type. Its shape mirrors
+	// the matching CRUD endpoint's body; the service decodes it per entity.
+	Payload json.RawMessage `json:"payload,omitempty"`
+
+	// TxnPayload is the original transaction-only field, kept so a client built
+	// against the single-entity push keeps working. Prefer Payload.
+	TxnPayload *services.PushTransactionPayload `json:"transaction_payload,omitempty"`
 }
 
 func parsePushItemRequest(r syncPushItemRequest) (services.PushItem, error) {
@@ -143,6 +151,7 @@ func parsePushItemRequest(r syncPushItemRequest) (services.PushItem, error) {
 		ClientRef:  r.ClientRef,
 		EntityType: services.PushEntityType(r.EntityType),
 		Operation:  services.PushOperation(r.Operation),
+		Payload:    r.Payload,
 		TxnPayload: r.TxnPayload,
 	}
 
@@ -332,6 +341,8 @@ type syncPeriodResponse struct {
 	Status             string    `json:"status"`
 	ConfigStartDay     int16     `json:"config_start_day"`
 	ConfigDurationDays int16     `json:"config_duration_days"`
+	ConfigPeriodMode   string    `json:"config_period_mode"`
+	IsTransition       bool      `json:"is_transition"`
 	ClosedAt           *string   `json:"closed_at,omitempty"`
 	CreatedAt          string    `json:"created_at"`
 	UpdatedAt          string    `json:"updated_at"`
@@ -566,6 +577,8 @@ func toSyncPeriodResponse(p sqlc.TrackingPeriod) syncPeriodResponse {
 		Status:             p.Status,
 		ConfigStartDay:     p.ConfigStartDay,
 		ConfigDurationDays: p.ConfigDurationDays,
+		ConfigPeriodMode:   p.ConfigPeriodMode,
+		IsTransition:       p.IsTransition,
 		CreatedAt:          p.CreatedAt.Time.UTC().Format(time.RFC3339),
 		UpdatedAt:          p.UpdatedAt.Time.UTC().Format(time.RFC3339),
 	}

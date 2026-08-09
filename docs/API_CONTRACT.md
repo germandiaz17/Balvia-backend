@@ -3,7 +3,7 @@
 > **Fuente de verdad** del contrato entre `Balvia-backend` y `Balvia-movile`.
 > **Regla de oro**: si tocas un endpoint, actualiza este archivo **en el mismo cambio**.
 >
-> Generado a partir de los handlers reales en `internal/handlers/`. Última revisión: **2026-08-01**.
+> Generado a partir de los handlers reales en `internal/handlers/`. Última revisión: **2026-08-08**.
 
 ---
 
@@ -41,11 +41,42 @@ revalida la misma regla dando `422`, para que un CHECK de Postgres nunca llegue 
 Unidad temporal de 28–31 días, **una activa por usuario**. Toda transacción pertenece a una y **el
 backend la asigna solo** — el cliente nunca la elige.
 
-**Regla 8**: cambiar la configuración del seguimiento (duración) aplica al **siguiente** seguimiento,
-jamás al activo. `ClosePeriodTx` relee `user_settings` en el momento del cierre.
+**Regla 8**: cambiar la configuración del seguimiento (duración o modo) aplica al **siguiente**
+seguimiento, jamás al activo. `ClosePeriodTx` relee `user_settings` en el momento del cierre.
 
 Varios endpoints hacen **cierre perezoso**: si al resolver el periodo activo resulta que ya terminó, lo
 cierran y generan el siguiente antes de responder.
+
+### 2.1 Modos de seguimiento
+
+`user_settings.tracking_period_mode` decide cómo se genera cada seguimiento nuevo:
+
+| Modo | Comportamiento |
+|---|---|
+| `rolling` (default) | Bloques de `tracking_duration_days` (28–31) encadenados: cada uno arranca el día siguiente al cierre del anterior. |
+| `calendar_month` | Meses reales: del día 1 al último día del mes. `tracking_duration_days` queda **inerte**. |
+
+**Periodo de transición.** Al pasar de `rolling` a `calendar_month`, el seguimiento activo no se toca,
+así que el siguiente casi nunca cae en un día 1. El hueco se cubre con un **puente**, marcado
+`is_transition: true`:
+
+- Si al arrancar quedan **≥15 días** hasta fin de mes, el puente es ese resto (puente corto).
+- Si quedan **<15**, se extiende hasta el fin del mes siguiente (puente largo).
+
+Así el puente mide siempre entre 15 y 45 días, y siempre termina en frontera de mes. Es la única clase
+de periodo autorizada a salirse del rango 28–31 (CHECK condicional, migración 000018). El cambio
+inverso (`calendar_month` → `rolling`) **nunca** necesita puente.
+
+Dos efectos que el cliente debe conocer:
+
+- **Presupuestos prorrateados**: al copiarlos hacia (o desde) un puente, los montos se escalan por
+  `díasDestino / díasOrigen`. Entre dos periodos normales se copian verbatim.
+- **`vs_previous_final` / `vs_previous_partial` no se generan** cuando alguno de los dos periodos
+  comparados es un puente: la comparación no normaliza por día y mentiría.
+
+**Excepción de onboarding.** Si el periodo activo es el **#1** y **no tiene transacciones**, cambiar el
+modo lo **reforma en sitio** en vez de diferirse — no hay nada que invalidar. En ese caso la respuesta
+trae `applies_to_next_period: false`. Es la única grieta deliberada en la regla 8.
 
 ---
 
@@ -64,13 +95,18 @@ cierran y generan el siguiente antes de responder.
 
 | Método | Ruta | Auth | Notas |
 |---|---|---|---|
-| `POST` | `/auth/register` | — | Crea user + settings + primer periodo + tokens, atómicamente |
+| `POST` | `/auth/register` | — | Crea user + settings + primer periodo + **cuenta por defecto** + tokens, atómicamente |
 | `POST` | `/auth/login` | — | |
 | `POST` | `/auth/refresh` | — | Rota el refresh token |
 | `POST` | `/auth/logout` | — | Revoca el refresh token |
 | `GET` | `/auth/me` | ✅ | |
 
-⚠️ El registro **no crea una cuenta por defecto**: el usuario nuevo tiene cero `accounts`.
+El registro **sí crea una cuenta por defecto**: `Efectivo`, tipo `cash`, moneda `COP`, saldo
+inicial `0`, icono `wallet`. Se crea dentro de la misma transacción que el user, las settings y el
+primer periodo. Sin ella el usuario nuevo no podría registrar ni un gasto, porque `account_id` es
+obligatorio en `POST /transactions`.
+
+El registro **no** devuelve la cuenta en su respuesta — el cliente la obtiene con `GET /accounts`.
 
 ### 3.3 Configuración del usuario — `/settings`
 
@@ -85,12 +121,13 @@ Recurso **singleton** del usuario autenticado (sin id en la ruta).
 
 ```jsonc
 {
-  "tracking_start_day": 15,      // 1–31
-  "tracking_duration_days": 31,  // 28–31
-  "default_currency": "COP",     // 3 letras MAYÚSCULAS
+  "tracking_start_day": 15,             // 1–31
+  "tracking_duration_days": 31,         // 28–31
+  "tracking_period_mode": "rolling",    // rolling | calendar_month
+  "default_currency": "COP",            // 3 letras MAYÚSCULAS
   "locale": "es-CO",
-  "theme": "system",             // system | light | dark
-  "default_period_view": "full"  // full | biweekly | weekly
+  "theme": "system",                    // system | light | dark
+  "default_period_view": "full"         // full | biweekly | weekly
 }
 ```
 
@@ -98,12 +135,16 @@ Una clave **ausente** deja la columna intacta (`COALESCE(narg, columna)`). Envia
 válido que devuelve el estado actual. `country_code` no es editable y `subscription_tier` lo controla
 el servidor.
 
+`applies_to_next_period` es `true` salvo cuando aplicó la excepción de onboarding (§2.1), en cuyo caso
+`active_period_end_date` ya trae la fecha del periodo reformado.
+
 **Respuesta**:
 
 ```jsonc
 {
   "tracking_start_day": 15,
   "tracking_duration_days": 31,
+  "tracking_period_mode": "rolling",
   "default_currency": "COP",
   "country_code": "CO",
   "locale": "es-CO",
@@ -111,7 +152,7 @@ el servidor.
   "default_period_view": "full",
   "subscription_tier": "free",
   "updated_at": "2026-08-01T02:09:08Z",
-  "applies_to_next_period": true,          // siempre true (regla 8)
+  "applies_to_next_period": true,          // false solo si aplicó la excepción de onboarding (§2.1)
   "active_period_end_date": "2026-08-30"   // null si no hay periodo activo
 }
 ```
@@ -119,14 +160,27 @@ el servidor.
 `active_period_end_date` existe para que la app diga la fecha exacta en que el cambio entra en
 vigor, en vez de un "aplica después" genérico.
 
-⚠️ `tracking_start_day` **hoy es inerte**: el cierre siempre arranca el siguiente periodo al día
-siguiente del anterior y solo estampa este valor como metadata.
+⚠️ `tracking_start_day` **es inerte en modo `rolling`**: el cierre siempre arranca el siguiente periodo
+al día siguiente del anterior y solo estampa este valor como metadata. En `calendar_month` no aplica:
+el ancla es siempre el día 1.
 
 ### 3.4 Cuentas — `/accounts`
 
 `POST` · `GET` (list) · `GET /:id` · `PUT /:id` · `DELETE /:id`
 
 `current_balance` lo mantiene el backend de forma atómica al crear/editar/borrar transacciones.
+
+⚠️ El `PUT` es **replace completo**, con una excepción: `initial_balance` es **opcional**.
+
+- **Ausente** → el saldo de apertura queda intacto (es el caso normal de un rename o un archive).
+  Mandar `null` es lo mismo que omitirlo.
+- **Presente** → restablece el saldo de apertura y desplaza `current_balance` por el mismo delta.
+  Solo se acepta **mientras la cuenta no tenga movimientos**; con transacciones vivas (como origen
+  o como contracuenta de un traslado) responde **422** `ErrAccountHasTransactions`. Una vez hubo
+  plata de por medio el saldo de apertura es historia, no configuración.
+
+Lo usa el wizard de onboarding para poner el saldo real sobre la cuenta `Efectivo` que creó el
+registro, en lugar de borrarla y recrearla.
 
 ### 3.5 Categorías — `/categories`
 
@@ -176,6 +230,10 @@ Tipos: `income`, `expense`, `transfer` (este último requiere `transfer_account_
 | `GET` | `/tracking-periods/:id` | |
 | `GET` | `/tracking-periods/:id/summary?view=` | `full` (default) \| `biweekly` \| `weekly` |
 | `GET` | `/tracking-periods/:id/insights` | **Polimórfico** (ver abajo) |
+
+Cada periodo trae `config_period_mode` (`rolling` \| `calendar_month`) e `is_transition`. En modo
+calendario la UI puede titular el periodo con el nombre del mes; un periodo con `is_transition: true`
+debe presentarse como puente, no como un seguimiento normal (§2.1).
 
 **Insights — 16 tipos.** La respuesta depende del estado del periodo:
 
@@ -267,9 +325,59 @@ la próxima ejecución. Avísale al usuario.
 Con `has_more: true`, avanza `since` al `updated_at` más antiguo entre las últimas filas de las
 colecciones truncadas. Persiste el cursor **solo** en la última página.
 
-⚠️ **El push solo acepta `entity_type: "transaction"`.** `account`, `category`, `budget`,
-`savings_goal`, `contribution` y `recurring` están declarados como constantes pero caen en
-`rejected: "unsupported entity_type"`. Asimetría conocida: el pull trae 8 entidades, el push acepta 1.
+**Push** acepta un lote de ítems independientes: un ítem malo nunca aborta el resto, y cada uno
+vuelve con su propio `status`.
+
+```jsonc
+{
+  "items": [
+    {
+      "client_ref": "tmp-1",            // opaco, para casar la respuesta
+      "entity_type": "account",
+      "operation": "create",            // create | update | delete
+      "entity_id": null,                // obligatorio en update y delete
+      "client_updated_at": "2026-08-08T12:00:00Z",  // snapshot del cliente
+      "payload": { "name": "Bancolombia", "account_type": "checking" }
+    }
+  ]
+}
+```
+
+`payload` tiene la **misma forma que el body del endpoint REST** de esa entidad, con los montos
+como **string** (nunca float). Entidades aceptadas:
+
+| `entity_type` | create | update | delete |
+|---|:--:|:--:|:--:|
+| `transaction` | ✅ | ✅ | ✅ |
+| `account` | ✅ | ✅ | ✅ |
+| `category` | ✅ | ✅ | ✅ |
+| `budget` | ✅ | ✅ | ✅ |
+| `savings_goal` | ✅ | ✅ | ✅ |
+| `recurring_transaction` | ✅ | ✅ | ✅ |
+| `savings_goal_contribution` | ✅ | — | — |
+
+`savings_goal_contribution` **solo acepta create**, y su payload necesita `savings_goal_id`. Un aporte
+mueve el `current_amount` de la meta y el dominio no modela la escritura compensatoria que haría falta
+para revisarlo después, así que update y delete se rechazan en vez de quedar a medias.
+
+`transaction` conserva además el campo `transaction_payload` del contrato anterior; si viajan los dos,
+gana `payload`.
+
+**Estados por ítem**:
+
+| Status | Significado | Qué hace el cliente |
+|---|---|---|
+| `applied` | Aplicado; `server_entity` trae la fila resultante | Reemplaza su copia local |
+| `skipped` | Ya existía (idempotencia por `client_id`, solo transacciones) | Guarda el id del servidor |
+| `conflict` | El servidor tiene una versión más nueva; `server_entity` es la ganadora | Reconcilia |
+| `rejected` | Violación de regla de negocio; `error` explica cuál | **No reintentar**: es permanente |
+
+La detección de conflicto compara `client_updated_at` con el `updated_at` del servidor, truncando a
+segundos para que una diferencia de serialización no se confunda con una edición real.
+
+Las reglas de negocio **no se relajan** por venir del push: cada ítem pasa por el mismo servicio que
+el endpoint REST. Un presupuesto duplicado, una categoría de sistema, un periodo cerrado o una cuenta
+ajena se rechazan igual, con el mismo mensaje.
 
 ⚠️ `budgets` y `goal_contributions` hacen **hard delete**, así que desaparecen sin tombstone. No hay
 mecanismo de re-sync completo implementado.
@@ -306,7 +414,8 @@ Es **best-effort y online-only**: el cliente debe tragarse los errores y no bloq
 - **Sin paginación ni filtros** en ningún listado (`/transactions` devuelve el periodo completo).
 - **Sin CORS, rate limiting ni security headers**.
 - **Sin OpenAPI/Swagger**.
-- `/sync/push` **multi-entidad** sin implementar.
+- El **cliente** todavía no encola mutaciones offline salvo transacciones: el servidor ya acepta
+  las 7 entidades, pero el outbox de la app solo llena transacciones.
 - Multi-moneda es **solo nominal**: hay columna `currency` pero no hay tasas de cambio ni conversión.
 - Sin recuperación de contraseña, verificación de email ni borrado de cuenta.
 - Sin notificaciones push ni exportación de datos.

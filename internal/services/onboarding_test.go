@@ -71,6 +71,15 @@ func TestOnboard_HappyPath(t *testing.T) {
 	assert.Equal(t, "CO", captured.Settings.CountryCode)
 	assert.Equal(t, "es-CO", captured.Settings.Locale)
 	assert.Equal(t, "free", captured.Settings.SubscriptionTier)
+
+	// A default cash account: without one the user cannot create a single
+	// transaction, since account_id is required.
+	assert.Equal(t, "Efectivo", captured.Account.Name)
+	assert.Equal(t, "cash", captured.Account.AccountType)
+	assert.Equal(t, "COP", captured.Account.Currency)
+	assert.True(t, captured.Account.InitialBalance.IsZero())
+	require.NotNil(t, captured.Account.Icon)
+	assert.Equal(t, "wallet", *captured.Account.Icon)
 }
 
 func TestOnboard_DuplicateEmail(t *testing.T) {

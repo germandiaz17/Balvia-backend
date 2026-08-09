@@ -134,6 +134,8 @@ type TrackingPeriod struct {
 	ClosedAt           pgtype.Timestamptz `json:"closed_at"`
 	CreatedAt          pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt          pgtype.Timestamptz `json:"updated_at"`
+	ConfigPeriodMode   string             `json:"config_period_mode"`
+	IsTransition       bool               `json:"is_transition"`
 }
 
 type TrackingPeriodInsight struct {
@@ -247,4 +249,5 @@ type UserSetting struct {
 	SubscriptionTier     string             `json:"subscription_tier"`
 	CreatedAt            pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt            pgtype.Timestamptz `json:"updated_at"`
+	TrackingPeriodMode   string             `json:"tracking_period_mode"`
 }

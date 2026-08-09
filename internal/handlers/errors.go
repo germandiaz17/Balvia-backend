@@ -31,6 +31,7 @@ func mapDomainError(err error) error {
 		errors.Is(err, domain.ErrDateOutsidePeriod),
 		errors.Is(err, domain.ErrInvalidAmount),
 		errors.Is(err, domain.ErrPeriodClosed),
+		errors.Is(err, domain.ErrAccountHasTransactions),
 		errors.Is(err, domain.ErrInvalidThreshold),
 		errors.Is(err, domain.ErrInvalidGoalDates),
 		errors.Is(err, domain.ErrInvalidFrequency),

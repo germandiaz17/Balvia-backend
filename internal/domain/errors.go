@@ -43,6 +43,11 @@ var (
 	// (immutable) tracking period.
 	ErrPeriodClosed = errors.New("the tracking period is closed and cannot be modified")
 
+	// ErrAccountHasTransactions is returned when the opening balance of an
+	// account that already has movements is edited. Once money has flowed the
+	// opening balance is history, not a setting.
+	ErrAccountHasTransactions = errors.New("the opening balance cannot be changed once the account has transactions")
+
 	// ErrInvalidThreshold is returned when an alert threshold is out of the 0-100 range.
 	ErrInvalidThreshold = errors.New("alert thresholds must be between 0 and 100")
 
@@ -85,3 +90,55 @@ var (
 	// values the schema allows (theme, default_period_view, currency).
 	ErrInvalidSettings = errors.New("invalid user settings value")
 )
+
+// businessRuleErrors lists every error above that means "the caller broke a
+// rule", as opposed to "something failed on our side".
+//
+// It exists because /sync/push has to tell those two apart: a business-rule
+// violation is permanent, so the item is reported as rejected and the client
+// drops it from its outbox, while a genuine fault is worth retrying. Before this
+// list the distinction was a switch in the sync service, and it silently fell
+// out of date the moment a new entity started flowing through push — a duplicate
+// budget came back as "internal server error", so the client had no way to tell
+// the user what was wrong and would retry a request that could never succeed.
+//
+// When you add an error above, add it here too unless it really does mean the
+// server failed.
+var businessRuleErrors = []error{
+	ErrEmailAlreadyExists,
+	ErrNotFound,
+	ErrNoActivePeriod,
+	ErrAccountNotFound,
+	ErrCategoryNotFound,
+	ErrInvalidTransfer,
+	ErrDateOutsidePeriod,
+	ErrInvalidAmount,
+	ErrInvalidCredentials,
+	ErrInvalidToken,
+	ErrBudgetExists,
+	ErrPeriodClosed,
+	ErrAccountHasTransactions,
+	ErrInvalidThreshold,
+	ErrGoalNotFound,
+	ErrInvalidGoalDates,
+	ErrInvalidFrequency,
+	ErrInvalidRecurringConfig,
+	ErrAINotConfigured,
+	ErrInvalidAIProvider,
+	ErrInvalidTrackingConfig,
+	ErrInvalidSettings,
+}
+
+// IsBusinessRule reports whether err is a rule the caller violated.
+//
+// Deliberately excluded: ErrAIUnavailable (the server is missing its encryption
+// key) and ErrAIUpstream (a third party failed) — neither is the caller's doing,
+// and both can succeed on a later attempt.
+func IsBusinessRule(err error) bool {
+	for _, target := range businessRuleErrors {
+		if errors.Is(err, target) {
+			return true
+		}
+	}
+	return false
+}

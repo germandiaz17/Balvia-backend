@@ -21,9 +21,10 @@ INSERT INTO user_settings (
     locale,
     theme,
     default_period_view,
-    subscription_tier
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-RETURNING id, user_id, tracking_start_day, tracking_duration_days, default_currency, country_code, locale, theme, default_period_view, subscription_tier, created_at, updated_at
+    subscription_tier,
+    tracking_period_mode
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+RETURNING id, user_id, tracking_start_day, tracking_duration_days, default_currency, country_code, locale, theme, default_period_view, subscription_tier, created_at, updated_at, tracking_period_mode
 `
 
 type CreateUserSettingsParams struct {
@@ -36,6 +37,7 @@ type CreateUserSettingsParams struct {
 	Theme                string    `json:"theme"`
 	DefaultPeriodView    string    `json:"default_period_view"`
 	SubscriptionTier     string    `json:"subscription_tier"`
+	TrackingPeriodMode   string    `json:"tracking_period_mode"`
 }
 
 func (q *Queries) CreateUserSettings(ctx context.Context, arg CreateUserSettingsParams) (UserSetting, error) {
@@ -49,6 +51,7 @@ func (q *Queries) CreateUserSettings(ctx context.Context, arg CreateUserSettings
 		arg.Theme,
 		arg.DefaultPeriodView,
 		arg.SubscriptionTier,
+		arg.TrackingPeriodMode,
 	)
 	var i UserSetting
 	err := row.Scan(
@@ -64,12 +67,13 @@ func (q *Queries) CreateUserSettings(ctx context.Context, arg CreateUserSettings
 		&i.SubscriptionTier,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.TrackingPeriodMode,
 	)
 	return i, err
 }
 
 const getUserSettingsByUserID = `-- name: GetUserSettingsByUserID :one
-SELECT id, user_id, tracking_start_day, tracking_duration_days, default_currency, country_code, locale, theme, default_period_view, subscription_tier, created_at, updated_at FROM user_settings
+SELECT id, user_id, tracking_start_day, tracking_duration_days, default_currency, country_code, locale, theme, default_period_view, subscription_tier, created_at, updated_at, tracking_period_mode FROM user_settings
 WHERE user_id = $1
 `
 
@@ -89,6 +93,7 @@ func (q *Queries) GetUserSettingsByUserID(ctx context.Context, userID uuid.UUID)
 		&i.SubscriptionTier,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.TrackingPeriodMode,
 	)
 	return i, err
 }
@@ -97,17 +102,19 @@ const updateUserSettings = `-- name: UpdateUserSettings :one
 UPDATE user_settings
 SET tracking_start_day     = COALESCE($1,     tracking_start_day),
     tracking_duration_days = COALESCE($2, tracking_duration_days),
-    default_currency       = COALESCE($3,       default_currency),
-    locale                 = COALESCE($4,                 locale),
-    theme                  = COALESCE($5,                  theme),
-    default_period_view    = COALESCE($6,    default_period_view)
-WHERE user_id = $7
-RETURNING id, user_id, tracking_start_day, tracking_duration_days, default_currency, country_code, locale, theme, default_period_view, subscription_tier, created_at, updated_at
+    tracking_period_mode   = COALESCE($3,   tracking_period_mode),
+    default_currency       = COALESCE($4,       default_currency),
+    locale                 = COALESCE($5,                 locale),
+    theme                  = COALESCE($6,                  theme),
+    default_period_view    = COALESCE($7,    default_period_view)
+WHERE user_id = $8
+RETURNING id, user_id, tracking_start_day, tracking_duration_days, default_currency, country_code, locale, theme, default_period_view, subscription_tier, created_at, updated_at, tracking_period_mode
 `
 
 type UpdateUserSettingsParams struct {
 	TrackingStartDay     *int16    `json:"tracking_start_day"`
 	TrackingDurationDays *int16    `json:"tracking_duration_days"`
+	TrackingPeriodMode   *string   `json:"tracking_period_mode"`
 	DefaultCurrency      *string   `json:"default_currency"`
 	Locale               *string   `json:"locale"`
 	Theme                *string   `json:"theme"`
@@ -120,13 +127,15 @@ type UpdateUserSettingsParams struct {
 // trigger. country_code and subscription_tier are deliberately not editable
 // here (the tier is server-controlled).
 //
-// Changing tracking_duration_days does NOT touch the active tracking period:
-// ClosePeriodTx re-reads these settings at close time, so the new duration
-// applies to the NEXT period. See UserSettingsService.Update.
+// Changing tracking_duration_days or tracking_period_mode does NOT touch the
+// active tracking period: ClosePeriodTx re-reads these settings at close time,
+// so the new configuration applies to the NEXT period. See
+// UserSettingsService.Update for the single, narrow exception.
 func (q *Queries) UpdateUserSettings(ctx context.Context, arg UpdateUserSettingsParams) (UserSetting, error) {
 	row := q.db.QueryRow(ctx, updateUserSettings,
 		arg.TrackingStartDay,
 		arg.TrackingDurationDays,
+		arg.TrackingPeriodMode,
 		arg.DefaultCurrency,
 		arg.Locale,
 		arg.Theme,
@@ -147,6 +156,7 @@ func (q *Queries) UpdateUserSettings(ctx context.Context, arg UpdateUserSettings
 		&i.SubscriptionTier,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.TrackingPeriodMode,
 	)
 	return i, err
 }

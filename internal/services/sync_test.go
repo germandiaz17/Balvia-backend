@@ -2,6 +2,7 @@ package services
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -173,7 +174,14 @@ func newSyncSvc(store *mockSyncStore) *SyncService {
 		store: store,
 		now:   func() time.Time { return time.Date(2026, 7, 9, 12, 0, 0, 0, time.UTC) },
 	}
-	return NewSyncService(store, txnSvc, zerolog.Nop())
+	return NewSyncService(store, zerolog.Nop(), SyncServices{
+		Transaction: txnSvc,
+		Account:     NewAccountService(store),
+		Category:    NewCategoryService(store),
+		Budget:      NewBudgetService(store),
+		SavingsGoal: NewSavingsGoalService(store),
+		Recurring:   NewRecurringTransactionService(store),
+	})
 }
 
 func activeSyncPeriod() sqlc.TrackingPeriod {
@@ -603,4 +611,354 @@ func TestPush_NoPayload_Rejected(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, result.Results, 1)
 	assert.Equal(t, StatusRejected, result.Results[0].Status)
+}
+
+// --- Multi-entity push -------------------------------------------------------
+//
+// The generic pipeline in sync_push_entities.go is shared by five entities, so
+// these exercise it through accounts (the entity with the smallest store
+// surface) and then cover what is genuinely entity-specific elsewhere.
+
+// accountSyncStore adds the account CRUD surface to the sync mock.
+type accountSyncStore struct {
+	mockSyncStore
+
+	account       sqlc.Account
+	getErr        error
+	created       *sqlc.CreateAccountParams
+	updated       *sqlc.UpdateAccountParams
+	deletedID     *uuid.UUID
+	txnsOnAccount int64
+}
+
+func (m *accountSyncStore) GetAccount(ctx context.Context, arg sqlc.GetAccountParams) (sqlc.Account, error) {
+	if m.getErr != nil {
+		return sqlc.Account{}, m.getErr
+	}
+	return m.account, nil
+}
+
+func (m *accountSyncStore) CreateAccount(ctx context.Context, arg sqlc.CreateAccountParams) (sqlc.Account, error) {
+	m.created = &arg
+	return m.account, nil
+}
+
+func (m *accountSyncStore) UpdateAccount(ctx context.Context, arg sqlc.UpdateAccountParams) (sqlc.Account, error) {
+	m.updated = &arg
+	return m.account, nil
+}
+
+func (m *accountSyncStore) SoftDeleteAccount(ctx context.Context, arg sqlc.SoftDeleteAccountParams) (uuid.UUID, error) {
+	m.deletedID = &arg.ID
+	return arg.ID, nil
+}
+
+func (m *accountSyncStore) CountTransactionsByAccount(ctx context.Context, arg sqlc.CountTransactionsByAccountParams) (int64, error) {
+	return m.txnsOnAccount, nil
+}
+
+func newAccountSyncSvc(store *accountSyncStore) *SyncService {
+	return NewSyncService(store, zerolog.Nop(), SyncServices{
+		Transaction: &TransactionService{store: store, now: time.Now},
+		Account:     NewAccountService(store),
+		Category:    NewCategoryService(store),
+		Budget:      NewBudgetService(store),
+		SavingsGoal: NewSavingsGoalService(store),
+		Recurring:   NewRecurringTransactionService(store),
+	})
+}
+
+func serverAccount(updatedAt time.Time) sqlc.Account {
+	return sqlc.Account{
+		ID:          uuid.New(),
+		Name:        "Efectivo",
+		AccountType: "cash",
+		Currency:    "COP",
+		UpdatedAt:   pgTs(updatedAt),
+	}
+}
+
+func TestPush_CreateAccount(t *testing.T) {
+	store := &accountSyncStore{account: serverAccount(time.Now())}
+	svc := newAccountSyncSvc(store)
+
+	res, err := svc.Push(context.Background(), uuid.New(), []PushItem{{
+		ClientRef:  "a1",
+		EntityType: EntityAccount,
+		Operation:  OpCreate,
+		Payload: json.RawMessage(`{
+			"name": "Bancolombia",
+			"account_type": "checking",
+			"currency": "COP",
+			"initial_balance": "150000.50"
+		}`),
+	}})
+
+	require.NoError(t, err)
+	require.Len(t, res.Results, 1)
+	assert.Equal(t, StatusApplied, res.Results[0].Status)
+	require.NotNil(t, store.created)
+	assert.Equal(t, "Bancolombia", store.created.Name)
+	// Money must survive the wire as an exact decimal, never a float.
+	assert.Equal(t, "150000.5", store.created.InitialBalance.String())
+}
+
+func TestPush_CreateAccountDefaultsBalanceToZero(t *testing.T) {
+	store := &accountSyncStore{account: serverAccount(time.Now())}
+	svc := newAccountSyncSvc(store)
+
+	_, err := svc.Push(context.Background(), uuid.New(), []PushItem{{
+		ClientRef:  "a1",
+		EntityType: EntityAccount,
+		Operation:  OpCreate,
+		Payload:    json.RawMessage(`{"name": "Efectivo", "account_type": "cash"}`),
+	}})
+
+	require.NoError(t, err)
+	require.NotNil(t, store.created)
+	assert.True(t, store.created.InitialBalance.IsZero(), "an account has to start somewhere")
+}
+
+func TestPush_UpdateAccountConflictWhenServerIsNewer(t *testing.T) {
+	serverAt := time.Date(2026, 8, 8, 12, 0, 0, 0, time.UTC)
+	store := &accountSyncStore{account: serverAccount(serverAt)}
+	svc := newAccountSyncSvc(store)
+
+	// The client edited from a snapshot taken an hour before the server's.
+	clientAt := serverAt.Add(-time.Hour)
+	id := store.account.ID
+
+	res, err := svc.Push(context.Background(), uuid.New(), []PushItem{{
+		ClientRef:       "a1",
+		EntityType:      EntityAccount,
+		Operation:       OpUpdate,
+		EntityID:        &id,
+		ClientUpdatedAt: &clientAt,
+		Payload:         json.RawMessage(`{"name": "Renombrada", "account_type": "cash"}`),
+	}})
+
+	require.NoError(t, err)
+	assert.Equal(t, StatusConflict, res.Results[0].Status)
+	assert.NotNil(t, res.Results[0].ServerEntity, "the client needs the winning version to reconcile")
+	assert.Nil(t, store.updated, "a conflict must not write")
+}
+
+func TestPush_UpdateAccountAppliesWhenClientIsNewer(t *testing.T) {
+	serverAt := time.Date(2026, 8, 8, 12, 0, 0, 0, time.UTC)
+	store := &accountSyncStore{account: serverAccount(serverAt)}
+	svc := newAccountSyncSvc(store)
+
+	clientAt := serverAt.Add(time.Hour)
+	id := store.account.ID
+
+	res, err := svc.Push(context.Background(), uuid.New(), []PushItem{{
+		ClientRef:       "a1",
+		EntityType:      EntityAccount,
+		Operation:       OpUpdate,
+		EntityID:        &id,
+		ClientUpdatedAt: &clientAt,
+		Payload:         json.RawMessage(`{"name": "Renombrada", "account_type": "cash"}`),
+	}})
+
+	require.NoError(t, err)
+	assert.Equal(t, StatusApplied, res.Results[0].Status)
+	require.NotNil(t, store.updated)
+	assert.Equal(t, "Renombrada", store.updated.Name)
+}
+
+// Sub-second differences come from serialisation, not from a user edit, so they
+// must not be reported as conflicts.
+func TestPush_UpdateAccountIgnoresSubSecondSkew(t *testing.T) {
+	serverAt := time.Date(2026, 8, 8, 12, 0, 0, 900_000_000, time.UTC)
+	store := &accountSyncStore{account: serverAccount(serverAt)}
+	svc := newAccountSyncSvc(store)
+
+	clientAt := serverAt.Truncate(time.Second)
+	id := store.account.ID
+
+	res, err := svc.Push(context.Background(), uuid.New(), []PushItem{{
+		ClientRef:       "a1",
+		EntityType:      EntityAccount,
+		Operation:       OpUpdate,
+		EntityID:        &id,
+		ClientUpdatedAt: &clientAt,
+		Payload:         json.RawMessage(`{"name": "Renombrada", "account_type": "cash"}`),
+	}})
+
+	require.NoError(t, err)
+	assert.Equal(t, StatusApplied, res.Results[0].Status)
+}
+
+func TestPush_DeleteAccount(t *testing.T) {
+	store := &accountSyncStore{account: serverAccount(time.Now())}
+	svc := newAccountSyncSvc(store)
+	id := store.account.ID
+
+	res, err := svc.Push(context.Background(), uuid.New(), []PushItem{{
+		ClientRef:  "a1",
+		EntityType: EntityAccount,
+		Operation:  OpDelete,
+		EntityID:   &id,
+	}})
+
+	require.NoError(t, err)
+	assert.Equal(t, StatusApplied, res.Results[0].Status)
+	require.NotNil(t, store.deletedID)
+	assert.Equal(t, id, *store.deletedID)
+}
+
+func TestPush_RejectsMissingEntityID(t *testing.T) {
+	store := &accountSyncStore{account: serverAccount(time.Now())}
+	svc := newAccountSyncSvc(store)
+
+	for _, op := range []PushOperation{OpUpdate, OpDelete} {
+		res, err := svc.Push(context.Background(), uuid.New(), []PushItem{{
+			ClientRef:  "a1",
+			EntityType: EntityAccount,
+			Operation:  op,
+			Payload:    json.RawMessage(`{"name": "X", "account_type": "cash"}`),
+		}})
+
+		require.NoError(t, err)
+		assert.Equal(t, StatusRejected, res.Results[0].Status, "op %s", op)
+		require.NotNil(t, res.Results[0].Error)
+		assert.Contains(t, *res.Results[0].Error, "entity_id is required")
+	}
+}
+
+func TestPush_RejectsMissingPayload(t *testing.T) {
+	store := &accountSyncStore{account: serverAccount(time.Now())}
+	svc := newAccountSyncSvc(store)
+
+	res, err := svc.Push(context.Background(), uuid.New(), []PushItem{{
+		ClientRef:  "a1",
+		EntityType: EntityAccount,
+		Operation:  OpCreate,
+	}})
+
+	require.NoError(t, err)
+	assert.Equal(t, StatusRejected, res.Results[0].Status)
+	assert.Nil(t, store.created, "a rejected item must not reach the database")
+}
+
+func TestPush_RejectsUnknownOperation(t *testing.T) {
+	store := &accountSyncStore{account: serverAccount(time.Now())}
+	svc := newAccountSyncSvc(store)
+
+	res, err := svc.Push(context.Background(), uuid.New(), []PushItem{{
+		ClientRef:  "a1",
+		EntityType: EntityAccount,
+		Operation:  PushOperation("upsert"),
+		Payload:    json.RawMessage(`{"name": "X", "account_type": "cash"}`),
+	}})
+
+	require.NoError(t, err)
+	assert.Equal(t, StatusRejected, res.Results[0].Status)
+	require.NotNil(t, res.Results[0].Error)
+	assert.Contains(t, *res.Results[0].Error, "unknown operation")
+}
+
+// The whole point of per-item results: one bad apple must not spoil the batch.
+func TestPush_BadItemDoesNotAbortTheBatch(t *testing.T) {
+	store := &accountSyncStore{account: serverAccount(time.Now())}
+	svc := newAccountSyncSvc(store)
+
+	res, err := svc.Push(context.Background(), uuid.New(), []PushItem{
+		{
+			ClientRef:  "bad",
+			EntityType: EntityAccount,
+			Operation:  OpCreate,
+			Payload:    json.RawMessage(`{"name": "X", "account_type": "cash", "initial_balance": "no soy un número"}`),
+		},
+		{
+			ClientRef:  "good",
+			EntityType: EntityAccount,
+			Operation:  OpCreate,
+			Payload:    json.RawMessage(`{"name": "Buena", "account_type": "cash"}`),
+		},
+	})
+
+	require.NoError(t, err)
+	require.Len(t, res.Results, 2)
+	assert.Equal(t, StatusRejected, res.Results[0].Status)
+	assert.Equal(t, StatusApplied, res.Results[1].Status)
+	assert.Equal(t, "Buena", store.created.Name)
+}
+
+// A malformed amount is the user's typo, not a server fault. It must name the
+// field, because "internal server error" is all the client could otherwise show
+// for something only the user can fix.
+func TestPush_MalformedAmountNamesTheField(t *testing.T) {
+	store := &accountSyncStore{account: serverAccount(time.Now())}
+	svc := newAccountSyncSvc(store)
+
+	res, err := svc.Push(context.Background(), uuid.New(), []PushItem{{
+		ClientRef:  "a1",
+		EntityType: EntityAccount,
+		Operation:  OpCreate,
+		Payload:    json.RawMessage(`{"name": "X", "account_type": "cash", "initial_balance": "abc"}`),
+	}})
+
+	require.NoError(t, err)
+	assert.Equal(t, StatusRejected, res.Results[0].Status)
+	require.NotNil(t, res.Results[0].Error)
+	assert.Contains(t, *res.Results[0].Error, "initial_balance")
+	assert.NotContains(t, *res.Results[0].Error, "internal server error")
+}
+
+func TestPush_StillRejectsAnUnknownEntityType(t *testing.T) {
+	store := &accountSyncStore{account: serverAccount(time.Now())}
+	svc := newAccountSyncSvc(store)
+
+	res, err := svc.Push(context.Background(), uuid.New(), []PushItem{{
+		ClientRef:  "x1",
+		EntityType: PushEntityType("tracking_period"),
+		Operation:  OpCreate,
+		Payload:    json.RawMessage(`{}`),
+	}})
+
+	require.NoError(t, err)
+	assert.Equal(t, StatusRejected, res.Results[0].Status)
+	require.NotNil(t, res.Results[0].Error)
+	assert.Contains(t, *res.Results[0].Error, "unsupported entity_type")
+}
+
+// Contributions move a goal's current_amount, and nothing in the domain undoes
+// that, so editing or deleting one over sync is refused rather than half-done.
+func TestPush_ContributionRejectsUpdateAndDelete(t *testing.T) {
+	store := &accountSyncStore{account: serverAccount(time.Now())}
+	svc := newAccountSyncSvc(store)
+	id := uuid.New()
+
+	for _, op := range []PushOperation{OpUpdate, OpDelete} {
+		res, err := svc.Push(context.Background(), uuid.New(), []PushItem{{
+			ClientRef:  "c1",
+			EntityType: EntityContribution,
+			Operation:  op,
+			EntityID:   &id,
+			Payload:    json.RawMessage(`{"savings_goal_id": "` + id.String() + `", "amount": "1000"}`),
+		}})
+
+		require.NoError(t, err)
+		assert.Equal(t, StatusRejected, res.Results[0].Status, "op %s", op)
+		require.NotNil(t, res.Results[0].Error)
+		assert.Contains(t, *res.Results[0].Error, "only supports create")
+	}
+}
+
+func TestPush_ContributionRequiresAGoal(t *testing.T) {
+	store := &accountSyncStore{account: serverAccount(time.Now())}
+	svc := newAccountSyncSvc(store)
+
+	res, err := svc.Push(context.Background(), uuid.New(), []PushItem{{
+		ClientRef:  "c1",
+		EntityType: EntityContribution,
+		Operation:  OpCreate,
+		Payload:    json.RawMessage(`{"amount": "1000"}`),
+	}})
+
+	require.NoError(t, err)
+	assert.Equal(t, StatusRejected, res.Results[0].Status)
+	require.NotNil(t, res.Results[0].Error)
+	assert.Contains(t, *res.Results[0].Error, "savings_goal_id is required")
 }

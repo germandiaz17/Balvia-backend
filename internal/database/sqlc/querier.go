@@ -28,6 +28,13 @@ type Querier interface {
 	ClosePeriod(ctx context.Context, id uuid.UUID) (TrackingPeriod, error)
 	// Used to detect whether final insights were already generated (idempotency).
 	CountFinalInsightsByPeriod(ctx context.Context, trackingPeriodID uuid.UUID) (int32, error)
+	// Counts live movements touching an account, either as source or as the
+	// counter-account of a transfer. Used to decide whether its opening balance is
+	// still editable.
+	CountTransactionsByAccount(ctx context.Context, arg CountTransactionsByAccountParams) (int64, error)
+	// Counts live movements inside a tracking period. Used to decide whether the
+	// period is still pristine enough to be reshaped in place.
+	CountTransactionsByPeriod(ctx context.Context, trackingPeriodID uuid.UUID) (int64, error)
 	CreateAccount(ctx context.Context, arg CreateAccountParams) (Account, error)
 	CreateBudget(ctx context.Context, arg CreateBudgetParams) (Budget, error)
 	CreateCategory(ctx context.Context, arg CreateCategoryParams) (Category, error)
@@ -117,6 +124,13 @@ type Querier interface {
 	ListSystemCategories(ctx context.Context) ([]Category, error)
 	ListTrackingPeriodsByUser(ctx context.Context, userID uuid.UUID) ([]TrackingPeriod, error)
 	ListTransactionsByPeriod(ctx context.Context, arg ListTransactionsByPeriodParams) ([]Transaction, error)
+	// Rewrites the end date and config metadata of an *active* period in place.
+	//
+	// This deliberately breaks domain rule 8 (configuration changes never reshape
+	// the active period), so it has exactly one caller: the onboarding carve-out in
+	// UserSettingsService.Update, which only fires for a pristine first period with
+	// no transactions. Do not reach for it anywhere else.
+	ReshapeTrackingPeriod(ctx context.Context, arg ReshapeTrackingPeriodParams) (TrackingPeriod, error)
 	RevokeAllUserRefreshTokens(ctx context.Context, userID uuid.UUID) error
 	RevokeRefreshToken(ctx context.Context, id uuid.UUID) error
 	SoftDeleteAccount(ctx context.Context, arg SoftDeleteAccountParams) (uuid.UUID, error)
@@ -154,6 +168,10 @@ type Querier interface {
 	// Only rows with a non-empty description are included so purely note-based
 	// transactions do not pollute the merchant list.
 	TopMerchants(ctx context.Context, trackingPeriodID uuid.UUID) ([]TopMerchantsRow, error)
+	// initial_balance is optional: NULL leaves the opening balance untouched.
+	// When supplied, current_balance is shifted by the same delta so the invariant
+	// current_balance = initial_balance + movements keeps holding. Callers must
+	// only supply it for accounts with no transactions (see AccountService.Update).
 	UpdateAccount(ctx context.Context, arg UpdateAccountParams) (Account, error)
 	UpdateBudget(ctx context.Context, arg UpdateBudgetParams) (Budget, error)
 	UpdateCategory(ctx context.Context, arg UpdateCategoryParams) (Category, error)
@@ -171,9 +189,10 @@ type Querier interface {
 	// trigger. country_code and subscription_tier are deliberately not editable
 	// here (the tier is server-controlled).
 	//
-	// Changing tracking_duration_days does NOT touch the active tracking period:
-	// ClosePeriodTx re-reads these settings at close time, so the new duration
-	// applies to the NEXT period. See UserSettingsService.Update.
+	// Changing tracking_duration_days or tracking_period_mode does NOT touch the
+	// active tracking period: ClosePeriodTx re-reads these settings at close time,
+	// so the new configuration applies to the NEXT period. See
+	// UserSettingsService.Update for the single, narrow exception.
 	UpdateUserSettings(ctx context.Context, arg UpdateUserSettingsParams) (UserSetting, error)
 	UpsertUserAISettings(ctx context.Context, arg UpsertUserAISettingsParams) (UserAiSetting, error)
 }

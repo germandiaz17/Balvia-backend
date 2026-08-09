@@ -56,7 +56,8 @@ El concepto central de Balvia es el **tracking_period** (seguimiento). Es la uni
 ### Reglas inmutables del seguimiento
 1. Es la **raíz temporal** de toda la data operativa
 2. **Solo 1 seguimiento activo por usuario** en cualquier momento (garantizado a nivel BD con partial unique index)
-3. **Duración: 28-31 días** (CHECK constraint en BD)
+3. **Duración: 28-31 días** (CHECK constraint en BD). Única excepción: los **periodos de
+   transición** (`is_transition`), que nacen al cambiar de modo y pueden medir 15-45 días.
 4. **Generación automática** al cerrar uno (no manual)
 5. **Inmutable al cerrar**: el seguimiento pasado no se toca, incluyendo sus transacciones
 6. **Toda transacción pertenece a 1 y solo 1 seguimiento**
@@ -65,9 +66,25 @@ El concepto central de Balvia es el **tracking_period** (seguimiento). Es la uni
 9. **NO se permite cerrar manualmente el seguimiento activo** (por ahora)
 10. Los seguimientos del mismo usuario **NUNCA pueden traslaparse en fechas** (EXCLUDE constraint con btree_gist)
 
+### Modos de seguimiento (`tracking_period_mode`)
+- **`rolling`** (default): bloques de `tracking_duration_days` encadenados. Comportamiento histórico.
+- **`calendar_month`**: meses reales, del día 1 al último día. `tracking_duration_days` queda inerte.
+
+Al pasar de `rolling` a `calendar_month`, el hueco hasta el día 1 se cubre con un **puente**
+(`is_transition = true`): si quedan ≥15 días de mes es el resto de ese mes, si no se extiende al fin
+del mes siguiente. Siempre mide 15-45 días y siempre termina en frontera de mes. El cambio inverso
+nunca necesita puente. Toda la aritmética vive en `internal/domain/period.go` (`NextPeriodRange` /
+`FirstPeriodRange`), función pura y con tests exhaustivos.
+
+**Excepción a la regla 8**: si el periodo activo es el #1 y no tiene transacciones, cambiar el modo
+lo reforma en sitio (`UserSettingsService.reshapePristineFirstPeriod`). Es para el wizard de
+onboarding, que corre después del registro. No hay nada que invalidar, así que no hay razón para
+diferirlo.
+
 ### Configuración del usuario (user_settings)
 - `tracking_start_day` (día del mes en que arranca): 1-31
 - `tracking_duration_days` (28-31)
+- `tracking_period_mode` (`rolling` | `calendar_month`)
 
 ### Vistas del seguimiento (UI only, no BD)
 - **Vista completa**: todo el seguimiento (default)
@@ -181,7 +198,7 @@ Cosas que potencialmente podrían ser reutilizables por otros proyectos.
 - **Estructura de carpetas creada** (sección 5)
 - **Dependencias instaladas** (Fiber v2, sqlx, pgx v5, validator, jwt, zerolog, godotenv, uuid, decimal, testify; CLI `sqlc` + `migrate`)
 - **`.env`/`.env.example`/`.gitignore`/`Makefile`/`sqlc.yaml` configurados**
-- **Migraciones adaptadas a golang-migrate** (hoy **17 pares** `000001…000017`, ver sección 7)
+- **Migraciones adaptadas a golang-migrate** (hoy **18 pares** `000001…000018`, ver sección 7)
 - **Migraciones aplicadas a Neon** (PG18, región us-east-1; pooled p/ app, directa p/ migrate)
 - **Modelos Go generados con sqlc** + pool pgx (`internal/database`)
 - **Health check** (`/health` liveness + `/health/ready` con ping a BD)
@@ -208,21 +225,34 @@ Cosas que potencialmente podrían ser reutilizables por otros proyectos.
 - **CRUD de transacciones recurrentes**: `/api/v1/recurring-transactions` (plantillas) + **motor de materialización** (`RecurringEngineService`) con **scheduler in-process horario** y catch-up. `computeNextDueDate` avanza `next_due_date`; al agotarse una plantilla (`end_date` alcanzado) queda `next_due_date = NULL` e `is_active = false`. ⚠️ `GET /recurring-transactions` **tiene efecto secundario**: dispara `ProcessUserRecurring` antes de responder, así que puede crear transacciones reales. Con tests de validación y del motor.
 - **Tracking periods read-only**: `GET /api/v1/tracking-periods` (list), `/active`, `/:id`, `/:id/summary?view=` (full|biweekly|weekly).
 - **Subsistema de insights**: 16 tipos — 7 "during" (`analytics_during.go`, recalculados best-effort al crear transacción y de forma perezosa al consultar) y 9 "final" (`analytics.go`, generados e inmutables al cierre). Expuestos en `GET /tracking-periods/:id/insights`, polimórfico por estado del periodo. 37 tests entre ambos generadores.
-- **Motor de sync offline-first**: `GET /api/v1/sync/pull` (delta por cursor `since`, paginado, 8 entidades, soft-deletes) + `POST /api/v1/sync/push` (por lotes, idempotente por `client_id`, rechazo por ítem). ⚠️ El push **solo soporta `entity_type: "transaction"`**; las demás constantes existen pero caen en `rejected`.
+- **Motor de sync offline-first**: `GET /api/v1/sync/pull` (delta por cursor `since`, paginado, 8 entidades, soft-deletes) + `POST /api/v1/sync/push` (por lotes, idempotente por `client_id`, rechazo por ítem).
+- **Push multi-entidad (2026-08-08)**: el push acepta las **7 entidades** (transaction, account, category, budget, savings_goal, recurring_transaction y savings_goal_contribution, esta última solo `create`). La forma común — decodificar, llamar al servicio, comparar `updated_at`, armar el resultado — vive una sola vez en `entityPusher` (`internal/services/sync_push_entities.go`); cada entidad aporta solo lo que de verdad difiere. Push **no tiene lógica de negocio propia**: replica los mismos servicios que usan los endpoints REST, así que una edición offline no puede colarse por debajo de una regla.
 
 - **Configuración del usuario**: `GET/PUT /api/v1/settings` (recurso singleton). Update **parcial** vía `COALESCE(sqlc.narg(...), columna)` — una clave ausente deja la columna intacta. Valida rangos (28–31, 1–31) y enums (theme, period view, currency 3 letras mayúsculas) **antes** de la BD, así que un CHECK de Postgres nunca aflora como 500. Devuelve `applies_to_next_period` + `active_period_end_date` para que la app diga la fecha exacta en que aplica el cambio. Sin migración nueva. Con tests.
 
+- **Onboarding de usuario nuevo**: `Onboard` provisiona además una **cuenta por defecto** (`Efectivo`, `cash`, `COP`, saldo 0, icono `wallet`) dentro de la misma transacción que el user, las settings y el primer periodo. Sin ella el usuario nuevo no podía registrar ni un gasto, porque `account_id` es obligatorio en `POST /transactions`. Para que el wizard de la app pueda fijar el saldo real sin borrar y recrear la cuenta, `PUT /accounts/:id` acepta ahora un `initial_balance` **opcional**: ausente deja el saldo de apertura intacto; presente lo restablece y desplaza `current_balance` por el mismo delta, pero **solo si la cuenta no tiene movimientos** (si los tiene → 422 `ErrAccountHasTransactions`). Query nueva `CountTransactionsByAccount` (cuenta también los traslados donde la cuenta es contracuenta). Sin migración. Con tests (`services/account_test.go`).
+
+- **Modo de seguimiento por mes calendario (2026-08-08)**: `user_settings.tracking_period_mode`
+  (`rolling` | `calendar_month`) + `tracking_periods.config_period_mode`/`is_transition`
+  (migración **000018**, que además relaja `chk_duration_range` condicionalmente para los puentes).
+  `ClosePeriodTx` delega el cálculo de fechas en `domain.NextPeriodRange`. Los presupuestos se
+  **prorratean** al entrar o salir de un puente (`budgetProrationFactor`), y `vs_previous_final` /
+  `vs_previous_partial` **no se generan** cuando alguno de los periodos comparados es un puente,
+  porque comparan totales crudos sin normalizar por día. Verificado E2E contra Neon: carve-out,
+  diferimiento, nacimiento del puente, prorrateo (300.000 → 280.000) y mes limpio posterior.
+
 ### 🔄 En progreso
-- Nada. El hito "cerrar el MVP de producto" quedó cerrado el 2026-08-01 (metas + recurrentes en móvil + `/settings`).
+- Nada. El hito "modo de seguimiento por mes calendario" quedó cerrado el 2026-08-08.
 
 ### ⏭️ Próximos pasos / pendientes conocidos
 
 Detalle completo en `docs/ROADMAP.md`.
 
-- **`/sync/push` multi-entidad**: hoy solo transactions. Bloquea que cuentas, categorías, presupuestos, metas y recurrentes se puedan mutar offline (el pull sí las trae → asimetría).
+- **Los usuarios registrados antes del 2026-08-03 no tienen cuenta por defecto**: la garantía es del registro, no retroactiva.
+- **El outbox de la app solo encola transacciones**: el servidor ya acepta las 7 entidades, pero la app todavía muta lo demás por red. Cerrar eso es trabajo del lado Flutter (columna `sync_status` en las tablas Drift que faltan + extender el outbox).
 - **`tracking_start_day` es inerte**: `ClosePeriodTx` genera el siguiente periodo como `fin_anterior + 1 día` y solo estampa el valor como metadata. Hacer real el ancla de día del mes exige absorber el desfase en la duración (el CHECK 28–31 solo permite ±3 días/ciclo) → hito propio.
 - **Breakdowns JSONB ricos del summary**: faltan `expense_by_day` y `budget_performance` en `tracking_period_summaries`.
-- **Tests faltantes**: `internal/handlers/` (nivel HTTP y `mapDomainError`), `internal/auth/` (JWT + bcrypt), `internal/middleware/` (`JWTAuth`), `services/auth.go` (rotación de refresh), `services/{account,category,period}.go`, y `database/store*.go` (toda la lógica transaccional). Todos los tests actuales son unitarios con mocks: los triggers, el EXCLUDE constraint y los CHECKs de Postgres nunca se ejercitan.
+- **Tests faltantes**: `internal/handlers/` (nivel HTTP y `mapDomainError`), `internal/auth/` (JWT + bcrypt), `internal/middleware/` (`JWTAuth`), `services/auth.go` (rotación de refresh), `services/{account,category,period}.go`, y `database/store*.go` (la lógica transaccional; el prorrateo de presupuestos sí tiene tests). Todos los tests actuales son unitarios con mocks: los triggers, el EXCLUDE constraint y los CHECKs de Postgres nunca se ejercitan.
 - **Infra**: sin CORS, rate limiting ni security headers; sin paginación ni filtros en los listados; sin OpenAPI; sin CI ni Dockerfile; deploy a VPS pendiente.
 
 ---
@@ -230,14 +260,14 @@ Detalle completo en `docs/ROADMAP.md`.
 ## 7. Migraciones SQL existentes
 
 Ya están en formato **golang-migrate** (un par `.up.sql`/`.down.sql` por versión, plano en
-`migrations/`) y **las 17 están aplicadas en Neon**:
+`migrations/`) y **las 18 están aplicadas en Neon**:
 
 ```
 migrations/
 ├── 000001_initial_setup.up.sql
 ├── 000001_initial_setup.down.sql
 ...
-└── 000017_user_ai_settings.down.sql
+└── 000018_tracking_period_mode.down.sql
 ```
 
 Cubren (en orden):
@@ -261,8 +291,9 @@ Cubren (en orden):
 | 000015 | recurring_occurrence_date | |
 | 000016 | sync_indexes | índices para el delta sync |
 | 000017 | user_ai_settings | BYOK: key cifrada por usuario |
+| 000018 | tracking_period_mode | modo rodante/calendario + `is_transition` + CHECK de duración condicional |
 
-`make migrate-version` debe reportar **17**.
+`make migrate-version` debe reportar **18**.
 
 ---
 

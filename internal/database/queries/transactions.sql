@@ -47,6 +47,22 @@ SELECT * FROM transactions
 WHERE user_id = $1 AND tracking_period_id = $2 AND deleted_at IS NULL
 ORDER BY transaction_date DESC, created_at DESC;
 
+-- name: CountTransactionsByAccount :one
+-- Counts live movements touching an account, either as source or as the
+-- counter-account of a transfer. Used to decide whether its opening balance is
+-- still editable.
+SELECT COUNT(*) FROM transactions
+WHERE user_id = sqlc.arg(user_id)
+  AND deleted_at IS NULL
+  AND (account_id = sqlc.arg(account_id) OR transfer_account_id = sqlc.arg(account_id));
+
+-- name: CountTransactionsByPeriod :one
+-- Counts live movements inside a tracking period. Used to decide whether the
+-- period is still pristine enough to be reshaped in place.
+SELECT COUNT(*) FROM transactions
+WHERE tracking_period_id = sqlc.arg(tracking_period_id)
+  AND deleted_at IS NULL;
+
 -- name: SoftDeleteTransaction :one
 UPDATE transactions
 SET deleted_at = NOW(), updated_at = NOW()

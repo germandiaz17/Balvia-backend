@@ -80,19 +80,35 @@ func main() {
 	transactionSvc := services.NewTransactionService(store)
 	transactionHandler := handlers.NewTransactionHandler(transactionSvc, validate)
 
-	accountHandler := handlers.NewAccountHandler(services.NewAccountService(store), validate)
-	categoryHandler := handlers.NewCategoryHandler(services.NewCategoryService(store), validate)
-	budgetHandler := handlers.NewBudgetHandler(services.NewBudgetService(store), validate)
+	// These are shared with the sync service below: /sync/push replays client
+	// mutations through the very same services the REST endpoints use, so an
+	// offline edit cannot take a shortcut around a business rule.
+	accountSvc := services.NewAccountService(store)
+	categorySvc := services.NewCategoryService(store)
+	budgetSvc := services.NewBudgetService(store)
+	savingsGoalSvc := services.NewSavingsGoalService(store)
+	recurringSvc := services.NewRecurringTransactionService(store)
+
+	accountHandler := handlers.NewAccountHandler(accountSvc, validate)
+	categoryHandler := handlers.NewCategoryHandler(categorySvc, validate)
+	budgetHandler := handlers.NewBudgetHandler(budgetSvc, validate)
 	trackingPeriodHandler := handlers.NewTrackingPeriodHandler(services.NewPeriodQueryService(store), validate)
-	savingsGoalHandler := handlers.NewSavingsGoalHandler(services.NewSavingsGoalService(store), validate)
+	savingsGoalHandler := handlers.NewSavingsGoalHandler(savingsGoalSvc, validate)
 	userSettingsHandler := handlers.NewUserSettingsHandler(services.NewUserSettingsService(store), validate)
 
 	periodSvc := services.NewPeriodService(store, log)
 	recurringEngineSvc := services.NewRecurringEngineService(store, log)
 
-	recurringHandler := handlers.NewRecurringTransactionHandler(services.NewRecurringTransactionService(store), recurringEngineSvc, validate)
+	recurringHandler := handlers.NewRecurringTransactionHandler(recurringSvc, recurringEngineSvc, validate)
 
-	syncSvc := services.NewSyncService(store, transactionSvc, log)
+	syncSvc := services.NewSyncService(store, log, services.SyncServices{
+		Transaction: transactionSvc,
+		Account:     accountSvc,
+		Category:    categorySvc,
+		Budget:      budgetSvc,
+		SavingsGoal: savingsGoalSvc,
+		Recurring:   recurringSvc,
+	})
 	syncHandler := handlers.NewSyncHandler(syncSvc)
 
 	// AI features (BYOK — bring your own key). Each user supplies their own provider

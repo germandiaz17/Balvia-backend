@@ -24,10 +24,13 @@ type mockSettingsStore struct {
 	getFn         func(ctx context.Context, userID uuid.UUID) (sqlc.UserSetting, error)
 	updateFn      func(ctx context.Context, arg sqlc.UpdateUserSettingsParams) (sqlc.UserSetting, error)
 	activeFn      func(ctx context.Context, userID uuid.UUID) (sqlc.TrackingPeriod, error)
+	txnCount      int64
 	updateCalled  bool
 	updateArg     sqlc.UpdateUserSettingsParams
 	closeCalled   bool
 	periodQueried bool
+	reshapeCalled bool
+	reshapeArg    sqlc.ReshapeTrackingPeriodParams
 }
 
 func (m *mockSettingsStore) GetUserSettingsByUserID(ctx context.Context, userID uuid.UUID) (sqlc.UserSetting, error) {
@@ -53,6 +56,21 @@ func (m *mockSettingsStore) ClosePeriodTx(ctx context.Context, periodID, userID 
 	return database.ClosePeriodResult{}, nil
 }
 
+func (m *mockSettingsStore) CountTransactionsByPeriod(ctx context.Context, periodID uuid.UUID) (int64, error) {
+	return m.txnCount, nil
+}
+
+func (m *mockSettingsStore) ReshapeTrackingPeriod(ctx context.Context, arg sqlc.ReshapeTrackingPeriodParams) (sqlc.TrackingPeriod, error) {
+	m.reshapeCalled = true
+	m.reshapeArg = arg
+	return sqlc.TrackingPeriod{
+		ID:               arg.ID,
+		EndDate:          arg.EndDate,
+		ConfigPeriodMode: arg.ConfigPeriodMode,
+		IsTransition:     arg.IsTransition,
+	}, nil
+}
+
 // fixedNow is the clock all these tests run at.
 var fixedNow = time.Date(2026, time.August, 1, 12, 0, 0, 0, time.UTC)
 
@@ -64,6 +82,7 @@ func defaultSettings() sqlc.UserSetting {
 	return sqlc.UserSetting{
 		TrackingStartDay:     15,
 		TrackingDurationDays: 30,
+		TrackingPeriodMode:   domain.PeriodModeRolling,
 		DefaultCurrency:      "COP",
 		CountryCode:          "CO",
 		Locale:               "es-CO",
@@ -82,6 +101,9 @@ func echoUpdate(_ context.Context, arg sqlc.UpdateUserSettingsParams) (sqlc.User
 	}
 	if arg.TrackingDurationDays != nil {
 		row.TrackingDurationDays = *arg.TrackingDurationDays
+	}
+	if arg.TrackingPeriodMode != nil {
+		row.TrackingPeriodMode = *arg.TrackingPeriodMode
 	}
 	if arg.DefaultCurrency != nil {
 		row.DefaultCurrency = *arg.DefaultCurrency
@@ -279,4 +301,118 @@ func TestGetSettings_LazilyClosesAnExpiredPeriod(t *testing.T) {
 	assert.True(t, store.closeCalled, "an already-ended period must be closed on read")
 	require.NotNil(t, view.ActivePeriodEnd)
 	assert.Equal(t, "2026-08-19", view.ActivePeriodEnd.Format("2006-01-02"))
+}
+
+func TestUpdateSettings_RejectsUnknownPeriodMode(t *testing.T) {
+	store := newStoreForUpdate()
+	svc := newSettingsSvc(store)
+
+	mode := "monthly" // plausible, but not one of ours
+	_, err := svc.Update(context.Background(), uuid.New(), SettingsUpdateInput{TrackingPeriodMode: &mode})
+
+	assertRejected(t, store, err, domain.ErrInvalidTrackingConfig)
+}
+
+func TestUpdateSettings_AcceptsCalendarMode(t *testing.T) {
+	store := newStoreForUpdate()
+	svc := newSettingsSvc(store)
+
+	mode := domain.PeriodModeCalendar
+	view, err := svc.Update(context.Background(), uuid.New(), SettingsUpdateInput{TrackingPeriodMode: &mode})
+
+	require.NoError(t, err)
+	assert.Equal(t, domain.PeriodModeCalendar, view.Settings.TrackingPeriodMode)
+	require.NotNil(t, store.updateArg.TrackingPeriodMode)
+	assert.Equal(t, domain.PeriodModeCalendar, *store.updateArg.TrackingPeriodMode)
+	// Nothing else was sent, so COALESCE must leave the rest alone.
+	assert.Nil(t, store.updateArg.TrackingDurationDays)
+}
+
+// pristineFirstPeriod is the state a user is in while the onboarding wizard
+// runs: period #1, freshly created, no transactions yet.
+func pristineFirstPeriod() sqlc.TrackingPeriod {
+	start := time.Date(2026, time.August, 1, 0, 0, 0, 0, time.UTC)
+	return sqlc.TrackingPeriod{
+		ID:               uuid.New(),
+		SequenceNumber:   1,
+		StartDate:        pgtype.Date{Time: start, Valid: true},
+		EndDate:          pgtype.Date{Time: start.AddDate(0, 0, 29), Valid: true},
+		Status:           "active",
+		ConfigPeriodMode: domain.PeriodModeRolling,
+	}
+}
+
+func newStoreWithPeriod(period sqlc.TrackingPeriod, txnCount int64) *mockSettingsStore {
+	store := newStoreForUpdate()
+	store.activeFn = func(context.Context, uuid.UUID) (sqlc.TrackingPeriod, error) { return period, nil }
+	store.txnCount = txnCount
+	return store
+}
+
+func TestUpdateSettings_ReshapesPristineFirstPeriod(t *testing.T) {
+	store := newStoreWithPeriod(pristineFirstPeriod(), 0)
+	svc := newSettingsSvc(store)
+
+	mode := domain.PeriodModeCalendar
+	view, err := svc.Update(context.Background(), uuid.New(), SettingsUpdateInput{TrackingPeriodMode: &mode})
+
+	require.NoError(t, err)
+	require.True(t, store.reshapeCalled, "a pristine first period should be reshaped in place")
+
+	// Started on the 1st, so calendar mode makes it a clean August with no bridge.
+	assert.Equal(t, time.Date(2026, time.August, 31, 0, 0, 0, 0, time.UTC), store.reshapeArg.EndDate.Time)
+	assert.Equal(t, domain.PeriodModeCalendar, store.reshapeArg.ConfigPeriodMode)
+	assert.False(t, store.reshapeArg.IsTransition)
+
+	// The change took effect now, so the client must not promise "next period".
+	assert.True(t, view.ReshapedActivePeriod)
+	assert.False(t, view.ActivePeriodEnd.Before(time.Date(2026, time.August, 31, 0, 0, 0, 0, time.UTC)))
+}
+
+func TestUpdateSettings_DefersOncePeriodHasTransactions(t *testing.T) {
+	store := newStoreWithPeriod(pristineFirstPeriod(), 1)
+	svc := newSettingsSvc(store)
+
+	mode := domain.PeriodModeCalendar
+	view, err := svc.Update(context.Background(), uuid.New(), SettingsUpdateInput{TrackingPeriodMode: &mode})
+
+	require.NoError(t, err)
+	assert.False(t, store.reshapeCalled, "a single transaction is enough to make the period untouchable")
+	assert.False(t, view.ReshapedActivePeriod)
+}
+
+func TestUpdateSettings_DefersPastTheFirstPeriod(t *testing.T) {
+	period := pristineFirstPeriod()
+	period.SequenceNumber = 2
+	store := newStoreWithPeriod(period, 0)
+	svc := newSettingsSvc(store)
+
+	mode := domain.PeriodModeCalendar
+	view, err := svc.Update(context.Background(), uuid.New(), SettingsUpdateInput{TrackingPeriodMode: &mode})
+
+	require.NoError(t, err)
+	assert.False(t, store.reshapeCalled, "rule 8 applies from the second period on, empty or not")
+	assert.False(t, view.ReshapedActivePeriod)
+}
+
+func TestUpdateSettings_DoesNotReshapeWhenModeIsUnchanged(t *testing.T) {
+	store := newStoreWithPeriod(pristineFirstPeriod(), 0)
+	svc := newSettingsSvc(store)
+
+	mode := domain.PeriodModeRolling // already the current mode
+	_, err := svc.Update(context.Background(), uuid.New(), SettingsUpdateInput{TrackingPeriodMode: &mode})
+
+	require.NoError(t, err)
+	assert.False(t, store.reshapeCalled, "re-sending the current mode should be a no-op")
+}
+
+func TestUpdateSettings_DurationChangeNeverReshapes(t *testing.T) {
+	store := newStoreWithPeriod(pristineFirstPeriod(), 0)
+	svc := newSettingsSvc(store)
+
+	d := int16(28)
+	_, err := svc.Update(context.Background(), uuid.New(), SettingsUpdateInput{TrackingDurationDays: &d})
+
+	require.NoError(t, err)
+	assert.False(t, store.reshapeCalled, "the carve-out is scoped to mode changes only")
 }

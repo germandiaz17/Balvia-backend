@@ -213,13 +213,18 @@ func collectFullDuringData(
 	}
 	data.GoalContribs = contribs
 
-	// Previous period summary (for vs_previous_partial).
+	// Previous period summary (for vs_previous_partial). Left nil when either
+	// side is a transition bridge — the comparison is not per-day normalised, so
+	// an uneven pair would report a spending change the user never made.
 	prevPeriod, err := q.GetPreviousTrackingPeriod(ctx, sqlc.GetPreviousTrackingPeriodParams{
 		UserID:         userID,
 		SequenceNumber: period.SequenceNumber,
 	})
 	switch {
 	case err == nil:
+		if period.IsTransition || prevPeriod.IsTransition {
+			break
+		}
 		prevSummary, err := q.GetTrackingPeriodSummaryForPeriod(ctx, prevPeriod.ID)
 		switch {
 		case err == nil:

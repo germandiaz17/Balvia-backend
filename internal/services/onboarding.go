@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/shopspring/decimal"
 
 	"github.com/germandiaz17/Balvia-backend/internal/database"
 	"github.com/germandiaz17/Balvia-backend/internal/database/sqlc"
@@ -26,6 +27,17 @@ const (
 	defaultTheme        = "system"
 	defaultPeriodView   = "full"
 	defaultTier         = "free"
+
+	// Everyone starts on rolling periods. The onboarding wizard offers calendar
+	// months right after registration, and switching there reshapes this first
+	// period in place — see UserSettingsService.reshapePristineFirstPeriod.
+	defaultPeriodMode = domain.PeriodModeRolling
+
+	// Default account provisioned for every new user. Transactions require an
+	// account_id, so a user with none cannot register a single expense.
+	defaultAccountName = "Efectivo"
+	defaultAccountType = "cash"
+	defaultAccountIcon = "wallet"
 
 	// uniqueViolation is the Postgres SQLSTATE for a unique_violation.
 	uniqueViolation = "23505"
@@ -59,11 +71,16 @@ func NewOnboardingService(store database.Store) *OnboardingService {
 	}
 }
 
-// Onboard creates the user, settings and first tracking period atomically.
+// Onboard creates the user, settings, first tracking period and a default cash
+// account atomically.
 //
-// First-period rule (per product decision): the period starts TODAY and lasts
-// defaultDurationDays. The configured tracking_start_day is set to today's day
-// of month, so future auto-generated periods follow the same monthly cadence.
+// First-period rule (per product decision): the period starts TODAY, shaped by
+// defaultPeriodMode. The configured tracking_start_day is set to today's day of
+// month, so future auto-generated periods follow the same monthly cadence.
+//
+// The default account exists so the <5s capture flow works on first launch; the
+// client walks the user through renaming it and setting its opening balance
+// during onboarding, but the invariant holds even if that is skipped.
 func (s *OnboardingService) Onboard(ctx context.Context, in OnboardingInput) (database.OnboardUserResult, error) {
 	// Fast pre-check for a friendly error; the DB unique constraint is the
 	// real guarantee and is handled below in case of a race.
@@ -73,10 +90,9 @@ func (s *OnboardingService) Onboard(ctx context.Context, in OnboardingInput) (da
 		return database.OnboardUserResult{}, err
 	}
 
-	today := s.now()
-	startDate := time.Date(today.Year(), today.Month(), today.Day(), 0, 0, 0, 0, today.Location())
-	endDate := startDate.AddDate(0, 0, defaultDurationDays-1)
-	startDay := int16(startDate.Day())
+	rng := domain.FirstPeriodRange(s.now(), defaultPeriodMode, defaultDurationDays)
+	startDay := int16(rng.Start.Day())
+	accountIcon := defaultAccountIcon
 
 	params := database.OnboardUserParams{
 		User: sqlc.CreateUserParams{
@@ -87,6 +103,7 @@ func (s *OnboardingService) Onboard(ctx context.Context, in OnboardingInput) (da
 		Settings: sqlc.CreateUserSettingsParams{
 			TrackingStartDay:     startDay,
 			TrackingDurationDays: defaultDurationDays,
+			TrackingPeriodMode:   defaultPeriodMode,
 			DefaultCurrency:      defaultCurrency,
 			CountryCode:          defaultCountryCode,
 			Locale:               defaultLocale,
@@ -95,12 +112,22 @@ func (s *OnboardingService) Onboard(ctx context.Context, in OnboardingInput) (da
 			SubscriptionTier:     defaultTier,
 		},
 		Period: sqlc.CreateTrackingPeriodParams{
-			StartDate:          pgDate(startDate),
-			EndDate:            pgDate(endDate),
+			StartDate:          pgDate(rng.Start),
+			EndDate:            pgDate(rng.End),
 			Status:             "active",
 			SequenceNumber:     1,
 			ConfigStartDay:     startDay,
 			ConfigDurationDays: defaultDurationDays,
+			ConfigPeriodMode:   defaultPeriodMode,
+			IsTransition:       rng.IsTransition,
+		},
+		Account: sqlc.CreateAccountParams{
+			Name:           defaultAccountName,
+			AccountType:    defaultAccountType,
+			Currency:       defaultCurrency,
+			InitialBalance: decimal.Zero,
+			Icon:           &accountIcon,
+			DisplayOrder:   0,
 		},
 	}
 

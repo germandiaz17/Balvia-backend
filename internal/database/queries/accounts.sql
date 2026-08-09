@@ -25,6 +25,10 @@ WHERE user_id = $1 AND deleted_at IS NULL
 ORDER BY display_order, created_at;
 
 -- name: UpdateAccount :one
+-- initial_balance is optional: NULL leaves the opening balance untouched.
+-- When supplied, current_balance is shifted by the same delta so the invariant
+-- current_balance = initial_balance + movements keeps holding. Callers must
+-- only supply it for accounts with no transactions (see AccountService.Update).
 UPDATE accounts
 SET name = sqlc.arg(name),
     account_type = sqlc.arg(account_type),
@@ -32,6 +36,9 @@ SET name = sqlc.arg(name),
     color = sqlc.narg(color),
     display_order = sqlc.arg(display_order),
     is_archived = sqlc.arg(is_archived),
+    current_balance = current_balance
+        + (COALESCE(sqlc.narg(initial_balance), initial_balance) - initial_balance),
+    initial_balance = COALESCE(sqlc.narg(initial_balance), initial_balance),
     updated_at = NOW()
 WHERE id = sqlc.arg(id) AND user_id = sqlc.arg(user_id) AND deleted_at IS NULL
 RETURNING *;
